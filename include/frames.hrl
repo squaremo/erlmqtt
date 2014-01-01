@@ -14,3 +14,5 @@
                    password = undefined,
                    client_id = undefined,
                    keep_alive = undefined }).
+
+-type(mqtt_frame() :: #connect{}).
