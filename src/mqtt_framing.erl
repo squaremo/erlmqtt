@@ -2,6 +2,13 @@
 
 -export([start/1]).
 
+-export_type([return_code/0,
+              parse_result/0,
+              message_type/0,
+              qos/0,
+              mqtt_frame/0]).
+
+
 -define(Top1, 128).
 -define(Lower7, 127).
 
@@ -23,6 +30,36 @@
 -define(set(Record, Field), fun(R, V) -> R#Record{ Field = V } end).
 
 -include("include/frames.hrl").
+
+
+-type(mqtt_frame() :: #connect{}
+                    | #connack{}
+                    | #publish{}).
+
+-type(qos() :: 0 | 1 | 2).
+-type(message_type() ::
+      ?CONNECT
+    | ?CONNACK
+    | ?PUBLISH
+    | ?PUBACK
+    | ?PUBREC
+    | ?PUBREL
+    | ?PUBCOMP
+    | ?SUBSCRIBE
+    | ?SUBACK
+    | ?UNSUBSCRIBE
+    | ?UNSUBACK
+    | ?PINGREQ
+    | ?PINGRESP
+    | ?DISCONNECT).
+
+-type(return_code() :: 'ok'
+                     | 'wrong_version'
+                     | 'bad_id'
+                     | 'server_unavailable'
+                     | 'bad_auth'
+                     | 'not_authorised'
+                     | 'reserved').
 
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
@@ -59,9 +96,9 @@ start(<<MessageType:4, Dup:1, QoS:2, Retain:1, Len1:8,
        Rest/binary>>) ->
     %% Invalid values?
     parse_from_length(#fixed{type = MessageType,
-                             dup = Dup,
+                             dup = flag(Dup),
                              qos = QoS,
-                             retain = Retain},
+                             retain = flag(Retain)},
                       Len1, 1, 0, Rest);
 %% Not enough to even get the first bit of the header. This might
 %% happen if a frame is split across packets. We don't expect to split
@@ -132,10 +169,10 @@ parse_message_type(?CONNECT, Fixed,
             {error, identifier_rejected};
        true ->
             S = {ok, #connect{ fixed = Fixed,
-                               will_retain = WillRetain,
+                               will_retain = flag(WillRetain),
                                will_qos = WillQos,
-                               clean_session = CleanSession,
-                               keep_alive = KeepAlive,
+                               clean_session = flag(CleanSession),
+                               keep_alive = flag(KeepAlive),
                                client_id = ClientId },
                  Rest},
             S1 = maybe_s(S,  WillFlag, ?set(connect, will_topic)),
@@ -147,7 +184,19 @@ parse_message_type(?CONNECT, Fixed,
                 {ok, _, _} -> {error, malformed_frame};
                 Err = {error, _} -> Err
             end
-    end.
+    end;
+
+parse_message_type(?CONNACK, Fixed, <<_Reserved:8, Return:8>>) ->
+    {ok, #connack{ fixed = Fixed,
+                   return_code = byte_to_return_code(Return) }};
+
+parse_message_type(?PUBLISH, Fixed, <<TopicLen:16, Topic:TopicLen/binary,
+                                     MsgId:16,
+                                     Payload/binary>>) ->
+    {ok, #publish{ fixed = Fixed, topic = Topic, message_id = MsgId,
+                   payload = Payload }};
+parse_message_type(_, _, _) ->
+    {error, unrecognised}.
 
 parse_string(<<Length:16, String:Length/binary, Rest/binary>>) ->
     {String, Rest};
@@ -165,3 +214,15 @@ maybe_s({ok, Frame, Bin}, 1, Setter) ->
         {String, Rest} ->
             {ok, Setter(Frame, String), Rest}
     end.
+
+flag(0) -> true;
+flag(1) -> false.
+
+-spec(byte_to_return_code(byte()) -> return_code()). 
+byte_to_return_code(0) -> ok;
+byte_to_return_code(1) -> wrong_version;
+byte_to_return_code(2) -> bad_id;
+byte_to_return_code(3) -> server_unavailable;
+byte_to_return_code(4) -> bad_auth;
+byte_to_return_code(5) -> not_authorised;
+byte_to_return_code(_) -> reserved.
