@@ -1,5 +1,10 @@
 -module(mqtt_framing).
 
+-ifdef(TEST).
+-include_lib("proper/include/proper.hrl").
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
 -export([start/1]).
 
 -export_type([return_code/0,
@@ -58,8 +63,7 @@
                      | 'bad_id'
                      | 'server_unavailable'
                      | 'bad_auth'
-                     | 'not_authorised'
-                     | 'reserved').
+                     | 'not_authorised').
 
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
@@ -172,7 +176,7 @@ parse_message_type(?CONNECT, Fixed,
                                will_retain = flag(WillRetain),
                                will_qos = WillQos,
                                clean_session = flag(CleanSession),
-                               keep_alive = flag(KeepAlive),
+                               keep_alive = KeepAlive,
                                client_id = ClientId },
                  Rest},
             S1 = maybe_s(S,  WillFlag, ?set(connect, will_topic)),
@@ -225,4 +229,29 @@ byte_to_return_code(2) -> bad_id;
 byte_to_return_code(3) -> server_unavailable;
 byte_to_return_code(4) -> bad_auth;
 byte_to_return_code(5) -> not_authorised;
-byte_to_return_code(_) -> reserved.
+byte_to_return_code(Else) -> throw({reserved_return_code, Else}).
+
+-spec(return_code_to_byte(return_code()) -> byte()).
+return_code_to_byte(ok) -> 0;
+return_code_to_byte(wrong_version) -> 1;
+return_code_to_byte(bad_id) -> 2;
+return_code_to_byte(server_unavailable) -> 3;
+return_code_to_byte(bad_auth) -> 4;
+return_code_to_byte(not_authorised) -> 5;
+return_code_to_byte(Else) -> throw({unknown_return_code, Else}).
+
+%% ---------- properties
+
+-ifdef(TEST).
+prop_return_code() ->
+    ?FORALL(Code, mqtt_framing:return_code(),
+            begin
+                B = return_code_to_byte(Code),
+                C = byte_to_return_code(B),
+                Code =:= C
+            end).
+
+proper_module_test() ->
+    ?assertEqual([], proper:module(?MODULE, [long_result])).
+
+-endif.

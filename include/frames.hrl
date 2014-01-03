@@ -13,12 +13,12 @@
                    username = undefined :: binary() | 'undefined',
                    password = undefined :: binary() | 'undefined',
                    client_id = undefined :: binary(),
-                   keep_alive = undefined :: boolean() }).
+                   keep_alive = undefined :: 0..16#ffff }).
 
 -record(connack, { fixed = undefined :: #fixed{},
                    return_code = ok :: mqtt_framing:return_code() }).
 
 -record(publish, { fixed = undefined :: #fixed{},
                    topic = undefined :: binary(),
-                   message_id :: 1 .. 16#ffff,
+                   message_id :: 1..16#ffff,
                    payload :: binary() }).

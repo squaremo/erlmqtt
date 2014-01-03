@@ -1,4 +1,4 @@
-.PHONY: all dialyse clean
+.PHONY: all dialyse clean test
 
 all:
 	rebar compile
@@ -8,3 +8,6 @@ dialyse: all
 
 clean:
 	rebar clean
+
+test: all
+	rebar eunit
