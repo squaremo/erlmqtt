@@ -5,13 +5,14 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([start/1]).
+-export([start/1, serialise/1]).
 
 -export_type([return_code/0,
               parse_result/0,
               message_type/0,
               qos/0,
-              mqtt_frame/0]).
+              mqtt_frame/0,
+              client_id/0]).
 
 
 -define(Top1, 128).
@@ -33,6 +34,11 @@
 -define(DISCONNECT, 14).
 
 -define(set(Record, Field), fun(R, V) -> R#Record{ Field = V } end).
+-define(undefined(ExprIn, IfUndefined, IfDefined),
+        case ExprIn of
+            undefined -> IfUndefined;
+            _         -> IfDefined
+        end).
 
 -include("include/frames.hrl").
 
@@ -64,6 +70,11 @@
                      | 'server_unavailable'
                      | 'bad_auth'
                      | 'not_authorised').
+
+%% This isn't quite adequate: client IDs are supposed to be between 1
+%% and 23 characters long; however, Erlang's type notation doesn't let
+%% me express that easily.
+-type(client_id() :: <<_:8, _:_*8>>).
 
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
@@ -99,10 +110,10 @@
 start(<<MessageType:4, Dup:1, QoS:2, Retain:1, Len1:8,
        Rest/binary>>) ->
     %% Invalid values?
-    parse_from_length(#fixed{type = MessageType,
-                             dup = flag(Dup),
-                             qos = QoS,
-                             retain = flag(Retain)},
+    parse_from_length(MessageType,
+                      #fixed{ dup = flag(Dup),
+                              qos = QoS,
+                              retain = flag(Retain)},
                       Len1, 1, 0, Rest);
 %% Not enough to even get the first bit of the header. This might
 %% happen if a frame is split across packets. We don't expect to split
@@ -110,31 +121,33 @@ start(<<MessageType:4, Dup:1, QoS:2, Retain:1, Len1:8,
 start(Bin1) ->
     {more, fun(Bin2) -> start(<<Bin1/binary, Bin2/binary>>) end}.
 
-parse_from_length(Fixed, LenByte, Multiplier0, Value0, Bin) ->
+
+parse_from_length(Type, Fixed, LenByte, Multiplier0, Value0, Bin) ->
     Length = Value0 + (LenByte band ?Lower7) * Multiplier0,
     case LenByte band ?Top1 of
         ?Top1 ->
             Multiplier = Multiplier0 * 128,
             case Bin of
                 <<NextLenByte:8, Rest/binary>> ->
-                    parse_from_length(Fixed, NextLenByte, Multiplier,
+                    parse_from_length(Type, Fixed, NextLenByte, Multiplier,
                                       Length, Rest);
                 <<>> ->
                     %% Assumes we get at least one more byte ..
                     {more, fun(<<NextLenByte:8, Rest/binary>>) ->
-                                   parse_from_length(Fixed, NextLenByte,
+                                   parse_from_length(Type, Fixed,
+                                                     NextLenByte,
                                                      Multiplier,
                                                      Length, Rest)
                            end}
             end;
         0 -> % No continuation bit
-            parse_variable_header(Fixed, Length, Bin)
+            parse_variable_header(Type, Fixed, Length, Bin)
     end.
 
 %% Each message type has its own idea of what the variable header
 %% contains.  We may as well read until we have the entire frame first
 %% though.
-parse_variable_header(Fixed = #fixed{ type = Type }, Length, Bin) ->
+parse_variable_header(Type, Fixed = #fixed{}, Length, Bin) ->
     case Bin of
         <<FrameRest:Length/binary, Rest/binary>> ->
             case parse_message_type(Type, Fixed, FrameRest) of
@@ -144,19 +157,22 @@ parse_variable_header(Fixed = #fixed{ type = Type }, Length, Bin) ->
                     {frame, Frame, Rest}
             end;
         NotEnough ->
-            parse_more_header(Fixed, Length, Length, [], NotEnough)
+            parse_more_header(Type, Fixed, Length, Length,
+                              [], NotEnough)
     end.
 
-parse_more_header(Fixed, Length, Needed, FragmentsRev, Bin) ->
+parse_more_header(Type, Fixed, Length, Needed, FragmentsRev, Bin) ->
     Got = size(Bin),
     if Got < Needed ->
             {more, fun(NextBin) ->
-                           parse_more_header(Fixed, Length, Needed - Got,
+                           parse_more_header(Type, Fixed, Length,
+                                             Needed - Got,
                                              [Bin | FragmentsRev], NextBin)
                    end};
        true ->
             Fragments = lists:reverse([Bin | FragmentsRev]),
-            parse_variable_header(Fixed, Length, list_to_binary(Fragments))
+            parse_variable_header(Type, Fixed, Length,
+                                  list_to_binary(Fragments))
     end.
 
 parse_message_type(?CONNECT, Fixed,
@@ -172,18 +188,28 @@ parse_message_type(?CONNECT, Fixed,
     if size(ClientId) > 23 ->
             {error, identifier_rejected};
        true ->
-            S = {ok, #connect{ fixed = Fixed,
-                               will_retain = flag(WillRetain),
-                               will_qos = WillQos,
-                               clean_session = flag(CleanSession),
-                               keep_alive = KeepAlive,
-                               client_id = ClientId },
-                 Rest},
-            S1 = maybe_s(S,  WillFlag, ?set(connect, will_topic)),
-            S2 = maybe_s(S1, WillFlag, ?set(connect, will_msg)),
-            S3 = maybe_s(S2, UsernameFlag, ?set(connect, username)),
-            S4 = maybe_s(S3, PasswordFlag, ?set(connect, password)),
-            case S4 of
+            C = #connect{ fixed = Fixed,
+                          will = undefined,
+                          clean_session = flag(CleanSession),
+                          keep_alive = KeepAlive,
+                          client_id = ClientId },
+            S1 = case WillFlag of
+                     0 ->
+                         {ok, C, Rest};
+                     1 ->
+                         {Topic, Rest1} = parse_string(Rest),
+                         {Message, Rest2} = parse_string(Rest1),
+                         {ok, C#connect{ will = #will{
+                                           topic = Topic,
+                                           message = Message,
+                                           qos = WillQos,
+                                           retain = flag(WillRetain)
+                                          }
+                                        }, Rest2}
+                 end,
+            S2 = maybe_s(S1, UsernameFlag, ?set(connect, username)),
+            S3 = maybe_s(S2, PasswordFlag, ?set(connect, password)),
+            case S3 of
                 {ok, Connect, <<>>} -> {ok, Connect};
                 {ok, _, _} -> {error, malformed_frame};
                 Err = {error, _} -> Err
@@ -219,8 +245,8 @@ maybe_s({ok, Frame, Bin}, 1, Setter) ->
             {ok, Setter(Frame, String), Rest}
     end.
 
-flag(0) -> true;
-flag(1) -> false.
+flag(0) -> false;
+flag(1) -> true.
 
 -spec(byte_to_return_code(byte()) -> return_code()). 
 byte_to_return_code(0) -> ok;
@@ -240,9 +266,119 @@ return_code_to_byte(bad_auth) -> 4;
 return_code_to_byte(not_authorised) -> 5;
 return_code_to_byte(Else) -> throw({unknown_return_code, Else}).
 
+
+%% --- serialise
+
+-spec(serialise(mqtt_frame()) -> iolist() | binary()).
+
+serialise(#connect{ fixed = Fixed,
+                    clean_session = Clean,
+                    will = Will,
+                    username = Username,
+                    password = Password,
+                    client_id = ClientId,
+                    keep_alive = KeepAlive }) ->
+    FixedByte = fixed_byte(?CONNECT, Fixed),
+
+    WillQos = ?undefined(Will, 0, Will#will.qos),
+    WillRetain = ?undefined(Will, false, Will#will.retain),
+    WillTopic = ?undefined(Will, undefined, Will#will.topic),
+    WillMsg = ?undefined(Will, undefined, Will#will.message),
+
+    Flags = flag_bit(Clean, 1) +
+        defined_bit(Will, 2) + %% assume will if topic given
+        (WillQos bsl 3) +
+        flag_bit(WillRetain, 5) +
+        string_bit(Password, 6) +
+        string_bit(Username, 7),
+
+    %% Done in reverse order so no lists:reverse needed.
+    Strings = << <<(size(Str)):16, Str/binary>> ||
+                  Str <- [ClientId, WillTopic, WillMsg,
+                          Username, Password], is_binary(Str)>>,
+    {LenEncoded, LenSize} = encode_length(12 + size(Strings)),
+    [<<FixedByte:8,
+      LenEncoded:LenSize, %% remaining length
+      6:16, "MQIsdp", 3:8, %% protocol name and version
+      Flags:8,
+      KeepAlive:16>>,
+     Strings];
+
+serialise(#connack{ fixed = Fixed, return_code = ReturnCode }) ->
+    FixedByte = fixed_byte(?CONNACK, Fixed),
+    <<FixedByte:8,
+     2:8, %% always 2
+     0:8, %% reserved
+     (return_code_to_byte(ReturnCode)):8>>;
+
+serialise(#publish{ fixed = Fixed,
+                    topic = Topic,
+                    message_id = MessageId,
+                    payload = Payload }) ->
+    FixedByte = fixed_byte(?PUBLISH, Fixed),
+    TopicSize = size(Topic),
+    {Num, Bits} = encode_length(2 + TopicSize + %% topic len + bytes
+                                2 + %% 16-bit message id
+                                size(Payload)),
+    [<<FixedByte:8, Num:Bits,
+      TopicSize:16, Topic/binary,
+      MessageId:16>>, Payload].
+
+-type(frame_length() :: 0..268435455).
+-type(length_num() :: 0..16#ffffffff).
+-type(length_bits() :: 8 | 16 | 24 | 32).
+
+-spec(encode_length(frame_length()) ->
+             {length_num(), length_bits()}).
+encode_length(L) when L < 16#80 ->
+    {L, 8};
+encode_length(L) ->
+    encode_length(L, 0, 0).
+
+encode_length(0, Bits, Sum) ->
+    {Sum, Bits};
+encode_length(L, Bits, Sum) ->
+    Mod128 = L band 16#7f,
+    X = L bsr 7,
+    Digit = case X of
+                0 -> Mod128;
+                _ -> Mod128 bor 16#80
+            end,
+    encode_length(X, Bits + 8, (Sum bsl 8) + Digit).
+
+fixed_byte(Type, #fixed{ dup = Dup,
+                         qos = Qos,
+                         retain = Retain }) ->
+    (Type bsl 4) +
+    flag_bit(Dup, 3) +
+    (Qos bsl 1) +
+    flag_bit(Retain, 0).
+
+flag_bit(false, _)  -> 0;
+flag_bit(true, Bit) -> 1 bsl Bit.
+
+string_bit(undefined, _) -> 0;
+string_bit(Str, Bit) when is_binary(Str) -> 1 bsl Bit.
+
+defined_bit(undefined, _) -> 0;
+defined_bit(_, Bit) -> 1 bsl Bit.
+
 %% ---------- properties
 
 -ifdef(TEST).
+-include("include/module_tests.hrl").
+
+encode_length_boundary_test_() ->
+    [?_test(?assertEqual({Num, Bits}, encode_length(Len))) ||
+        {Len, Num, Bits} <- [{0, 0, 8},
+                             {127, 127, 8},
+                             {128, 16#8001, 16},
+                             {16383, 16#ff7f, 16},
+                             {16384, 16#808001, 24},
+                             {2097151, 16#ffff7f, 24},
+                             {2097152, 16#80808001, 32},
+                             {268435455, 16#ffffff7f, 32}]].
+
 prop_return_code() ->
     ?FORALL(Code, mqtt_framing:return_code(),
             begin
@@ -251,7 +387,19 @@ prop_return_code() ->
                 Code =:= C
             end).
 
-proper_module_test() ->
-    ?assertEqual([], proper:module(?MODULE, [long_result])).
+%% NB #connect has a special case because it's difficult to express
+%% the type for client ID (a string between 1 and 23 bytes long).
+prop_roundtrip_frame() ->
+    ?FORALL(Frame, mqtt_frame(),
+            ?IMPLIES(case Frame of
+                         #connect{ client_id = ClientId } ->
+                             size(ClientId) < 24;
+                         _ -> true
+                     end,
+                     begin
+                         Ser = iolist_to_binary(serialise(Frame)),
+                         {frame, F, <<>>} = start(Ser),
+                         F =:= Frame
+                     end)).
 
 -endif.
