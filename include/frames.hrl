@@ -22,5 +22,17 @@
 
 -record(publish, { fixed = undefined :: #fixed{},
                    topic = undefined :: binary(),
-                   message_id = undefined :: 1..16#ffff,
+                   message_id = undefined :: mqtt_framing:message_id(),
                    payload = undefined :: binary() }).
+
+-record(puback, { fixed = undefined :: #fixed{},
+                  message_id = undefined :: mqtt_framing:message_id() }).
+
+-record(pubrec, { fixed = undefined :: #fixed{},
+                  message_id = undefined :: mqtt_framing:message_id() }).
+
+-record(pubrel, { fixed = undefined :: #fixed{},
+                  message_id = undefined :: mqtt_framing:message_id() }).
+
+-record(pubcomp, { fixed = undefined :: #fixed{},
+                   message_id = undefined :: mqtt_framing:message_id() }).

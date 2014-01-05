@@ -5,7 +5,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 parse_incomplete_frame_test_() ->
-    [?_test({more, _K} = mqtt_framing:start(Bin)) ||
+    [?_test({more, _K} = mqtt_framing:parse(Bin)) ||
         Bin <- [<<>>,
                 <<6:4, 1:1, 1:2>>,
                 <<1:4, 1:1, 1:2, 1:1>>,
@@ -19,7 +19,7 @@ parse_incomplete_connect_test() ->
           0, 6, "MQIsdp", 3,
           0, 10:16,
           0, 10, "fo", "junk at the end">>,
-    {error, _} = mqtt_framing:start(C).
+    {error, _} = mqtt_framing:parse(C).
 
 parse_connect_test() ->
     %% No extra strings
@@ -28,4 +28,8 @@ parse_connect_test() ->
          0, 10:16, %% flags and keepalive
          %% only client id is needed
          0, 6, "foobar", "junk at the end">>,
-    {frame, #connect{}, _} = mqtt_framing:start(C).
+    {frame, #connect{}, _} = mqtt_framing:parse(C).
+
+parse_reserved_return_code_test() ->
+    C = <<32,2,0,45>>,
+    {error, {reserved_return_code, 45}} = mqtt_framing:parse(C).

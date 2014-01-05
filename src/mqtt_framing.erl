@@ -5,11 +5,12 @@
 -include_lib("eunit/include/eunit.hrl").
 -endif.
 
--export([start/1, serialise/1]).
+-export([parse/1, serialise/1]).
 
 -export_type([return_code/0,
               parse_result/0,
               message_type/0,
+              message_id/0,
               qos/0,
               mqtt_frame/0,
               client_id/0]).
@@ -43,9 +44,14 @@
 -include("include/frames.hrl").
 
 
--type(mqtt_frame() :: #connect{}
-                    | #connack{}
-                    | #publish{}).
+-type(mqtt_frame() ::
+        #connect{}
+      | #connack{}
+      | #publish{}
+      | #puback{}
+      | #pubrec{}
+      | #pubrel{}
+      | #pubcomp{}).
 
 -type(qos() :: 0 | 1 | 2).
 -type(message_type() ::
@@ -76,6 +82,8 @@
 %% me express that easily.
 -type(client_id() :: <<_:8, _:_*8>>).
 
+-type(message_id() :: 1..16#ffff).
+
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
 %% and the (encoded) remaining length; then, a variable header which
@@ -100,11 +108,17 @@
 %% frame was not able to be parsed, and parsing should start again
 %% with `K` when there are more bytes available.
 
--type(parse_result() :: {frame, mqtt_frame()}
+-type(parse_result() :: {frame, mqtt_frame(), binary()}
                       | {error, term()}
                       | {more, parse()}).
-
 -type(parse() :: fun((binary()) -> parse_result())).
+
+-spec(parse(binary()) -> parse_result()).
+parse(Bin) ->
+    try start(Bin)
+    catch
+        throw:A -> {error, A}
+    end.
 
 -spec(start(binary()) -> parse_result()).
 start(<<MessageType:4, Dup:1, QoS:2, Retain:1, Len1:8,
@@ -225,6 +239,16 @@ parse_message_type(?PUBLISH, Fixed, <<TopicLen:16, Topic:TopicLen/binary,
                                      Payload/binary>>) ->
     {ok, #publish{ fixed = Fixed, topic = Topic, message_id = MsgId,
                    payload = Payload }};
+
+parse_message_type(?PUBACK, Fixed, <<MessageId:16>>) ->
+    {ok, #puback{ fixed = Fixed, message_id = MessageId }};
+parse_message_type(?PUBREC, Fixed, <<MessageId:16>>) ->
+    {ok, #pubrec{ fixed = Fixed, message_id = MessageId }};
+parse_message_type(?PUBREL, Fixed, <<MessageId:16>>) ->
+    {ok, #pubrel{ fixed = Fixed, message_id = MessageId }};
+parse_message_type(?PUBCOMP, Fixed, <<MessageId:16>>) ->
+    {ok, #pubcomp{ fixed = Fixed, message_id = MessageId }};
+
 parse_message_type(_, _, _) ->
     {error, unrecognised}.
 
@@ -322,7 +346,19 @@ serialise(#publish{ fixed = Fixed,
                                 size(Payload)),
     [<<FixedByte:8, Num:Bits,
       TopicSize:16, Topic/binary,
-      MessageId:16>>, Payload].
+      MessageId:16>>, Payload];
+
+serialise(#puback{ fixed = Fixed, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBACK, Fixed)):8, 2:8, MsgId:16>>;
+serialise(#pubrec{ fixed = Fixed, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBREC, Fixed)):8, 2:8, MsgId:16>>;
+serialise(#pubrel{ fixed = Fixed, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBREL, Fixed)):8, 2:8, MsgId:16>>;
+serialise(#pubcomp{ fixed = Fixed, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBCOMP, Fixed)):8, 2:8, MsgId:16>>;
+
+serialise(Else) ->
+    throw({unserialisable, Else}).
 
 -type(frame_length() :: 0..268435455).
 -type(length_num() :: 0..16#ffffffff).
