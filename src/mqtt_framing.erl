@@ -313,15 +313,15 @@ parse_string(_Bin) ->
 
 parse_subs(<<>>, Subs) ->
     lists:reverse(Subs);
-parse_subs(<<Len:16, Topic:Len/binary, _:6, Qos:2, Rest/binary>>,
-           Subs) ->
+parse_subs(<<Len:16, Topic:Len/binary, Qos:8, Rest/binary>>,
+           Subs) when Qos < 3 ->
     parse_subs(Rest, [#subscription{ topic = Topic, qos = Qos } | Subs]);
 parse_subs(Else, _Subs) ->
     throw({unparsable_as_sub, Else}).
 
 parse_qoses(<<>>, Qoses) ->
     lists:reverse(Qoses);
-parse_qoses(<<0:6, Qos:2, Rest/binary>>, Qoses) ->
+parse_qoses(<<Qos:8, Rest/binary>>, Qoses) when Qos < 3 ->
     parse_qoses(Rest, [Qos | Qoses]);
 parse_qoses(Else, _) ->
     throw({unparsable_as_qos, Else}).
@@ -410,7 +410,6 @@ serialise(#connect{ clean_session = Clean,
         string_bit(Password, 6) +
         string_bit(Username, 7),
 
-    %% Done in reverse order so no lists:reverse needed.
     Strings = << <<(size(Str)):16, Str/binary>> ||
                   Str <- [ClientId, WillTopic, WillMsg,
                           Username, Password], is_binary(Str)>>,
@@ -454,7 +453,7 @@ serialise(#pubcomp{ message_id = MsgId }) ->
 serialise(#subscribe{ dup = Dup, qos = SubQos,
                       message_id = MessageId,
                       subscriptions = Subs }) ->
-    SubsBin = << <<(size(Topic)):16, Topic/binary, 0:6, Qos:2>> ||
+    SubsBin = << <<(size(Topic)):16, Topic/binary, Qos:8>> ||
                   #subscription{ topic = Topic,
                                  qos = Qos } <- Subs >>,
     {Num, Bits} = encode_length(2 + size(SubsBin)),
