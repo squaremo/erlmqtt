@@ -50,7 +50,9 @@
     | ?PINGRESP
     | ?DISCONNECT).
 
--type(qos_level() :: 0 | 1 | 2).
+-type(qos_level() :: 'at_least_once'
+                   | 'at_most_once'
+                   | 'exactly_once').
 
 -type(return_code() :: 'ok'
                      | 'wrong_version'

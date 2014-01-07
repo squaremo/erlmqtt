@@ -149,7 +149,7 @@ parse_message_type(?CONNECT, _Flags,
                          {ok, C#connect{ will = #will{
                                            topic = Topic,
                                            message = Message,
-                                           qos = WillQos,
+                                           qos = qos_flag(WillQos, 0),
                                            retain = flag(WillRetain)
                                           }
                                         }, Rest2}
@@ -174,8 +174,8 @@ parse_message_type(?PUBLISH, Flags,
     QosLevel = qos_flag(Flags),
     {Qos, Payload} =
         case QosLevel of
-            0 ->
-                {0, MessageIdAndPayload};
+            at_least_once ->
+                {QosLevel, MessageIdAndPayload};
             _ ->
                 <<MsgId:16, P/binary>> = MessageIdAndPayload,
                 check_message_id(MsgId),
@@ -250,14 +250,16 @@ parse_subs(<<>>, Subs) ->
     lists:reverse(Subs);
 parse_subs(<<Len:16, Topic:Len/binary, Qos:8, Rest/binary>>,
            Subs) when Qos < 3 ->
-    parse_subs(Rest, [#subscription{ topic = Topic, qos = Qos } | Subs]);
+    parse_subs(Rest,
+               [#subscription{ topic = Topic,
+                               qos = qos_flag(Qos, 0) } | Subs]);
 parse_subs(Else, _Subs) ->
     throw({unparsable_as_sub, Else}).
 
 parse_qoses(<<>>, Qoses) ->
     lists:reverse(Qoses);
 parse_qoses(<<Qos:8, Rest/binary>>, Qoses) when Qos < 3 ->
-    parse_qoses(Rest, [Qos | Qoses]);
+    parse_qoses(Rest, [qos_flag(Qos, 0) | Qoses]);
 parse_qoses(Else, _) ->
     throw({unparsable_as_qos, Else}).
 
@@ -284,10 +286,16 @@ maybe_s({ok, Frame, Bin}, 1, Setter) ->
 flag(0) -> false;
 flag(_) -> true.
 
+%% The QoS value is at bits 2 and 1 in the fixed header
 qos_flag(Flags) ->
-    case (Flags band 2#0110) bsr 1 of
-        3 -> throw({invalid_qos_value, 3});
-        Q -> Q
+    qos_flag(Flags, 1).
+
+qos_flag(Flags, LSB) ->
+    case (Flags bsr LSB) band 2#11 of
+        0 -> at_least_once;
+        1 -> at_most_once;
+        2 -> exactly_once;
+        3 -> throw({invalid_qos_value, 3})
     end.
 
 dup_flag(Flags) ->
@@ -322,8 +330,8 @@ check_message_id(Else) ->
 %% To enforce the frames for which the QoS is always 1
 check_qos_1(Flags) ->
     case qos_flag(Flags) of
-        1    -> ok;
-        Else -> throw({invalid_qos_value, Else})
+        at_most_once -> ok;
+        Else         -> throw({invalid_qos_value, Else})
     end.
 
 %% --- serialise
@@ -338,7 +346,7 @@ serialise(#connect{ clean_session = Clean,
                     keep_alive = KeepAlive }) ->
     FixedByte = fixed_byte(?CONNECT),
 
-    WillQos = ?undefined(Will, 0, Will#will.qos),
+    WillQos = ?undefined(Will, 0, qos_bits(Will#will.qos)),
     WillRetain = ?undefined(Will, false, Will#will.retain),
     WillTopic = ?undefined(Will, undefined, Will#will.topic),
     WillMsg = ?undefined(Will, undefined, Will#will.message),
@@ -373,7 +381,7 @@ serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
                     payload = Payload }) ->
     TopicSize = size(Topic),
     case Qos of
-        0 ->
+        at_least_once ->
             FixedByte = fixed_byte(?PUBLISH, Dup, 0, Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         size(Payload)),
@@ -381,7 +389,8 @@ serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
               TopicSize:16, Topic/binary>>, Payload];
         #qos{ level = QosLevel,
               message_id = MessageId } ->
-            FixedByte = fixed_byte(?PUBLISH, Dup, QosLevel, Retain),
+            FixedByte = fixed_byte(?PUBLISH, Dup,
+                                   qos_bits(QosLevel), Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         2 + %% message id
                                         size(Payload)),
@@ -402,7 +411,8 @@ serialise(#pubcomp{ message_id = MsgId }) ->
 serialise(#subscribe{ dup = Dup,
                       message_id = MessageId,
                       subscriptions = Subs }) ->
-    SubsBin = << <<(size(Topic)):16, Topic/binary, Qos:8>> ||
+    SubsBin = << <<(size(Topic)):16, Topic/binary,
+                  (qos_bits(Qos)):8>> ||
                   #subscription{ topic = Topic,
                                  qos = Qos } <- Subs >>,
     {Num, Bits} = encode_length(2 + size(SubsBin)),
@@ -411,7 +421,7 @@ serialise(#subscribe{ dup = Dup,
 
 serialise(#suback{ message_id = MessageId,
                    qoses = Qoses }) ->
-    QosesBin = << <<0:6, Qos:2>> || Qos <- Qoses>>,
+    QosesBin = << <<(qos_bits(Qos)):8>> || Qos <- Qoses>>,
     {Num, Bits} = encode_length(2 + size(QosesBin)),
     <<(fixed_byte(?SUBACK)):8, Num:Bits,
      MessageId:16, QosesBin/binary>>;
@@ -463,10 +473,10 @@ encode_length(L, Bits, Sum) ->
 fixed_byte(MessageType) ->
     fixed_byte(MessageType, false, 0, false).
 
-fixed_byte(Type, Dup, Qos, Retain) ->
+fixed_byte(Type, Dup, QosBits, Retain) ->
     (Type bsl 4) +
         flag_bit(Dup, 3) +
-        (Qos bsl 1) +
+        (QosBits bsl 1) +
         flag_bit(Retain, 0).
 
 flag_bit(false, _)  -> 0;
@@ -477,6 +487,10 @@ string_bit(Str, Bit) when is_binary(Str) -> 1 bsl Bit.
 
 defined_bit(undefined, _) -> 0;
 defined_bit(_, Bit) -> 1 bsl Bit.
+
+qos_bits(at_least_once) -> 0;
+qos_bits(at_most_once)  -> 1;
+qos_bits(exactly_once)  -> 2.
 
 %% ---------- properties
 

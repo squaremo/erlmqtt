@@ -5,13 +5,14 @@
 
 -record(will, { topic = undefined :: binary(),
                 message = undefined :: binary(),
-                qos = 0 :: qos_level(),
+                qos = 'at_least_once' :: qos_level(),
                 retain = false :: boolean() }).
 
 -record(subscription, { topic = undefined :: binary(),
-                        qos = 0 :: qos_level() }).
+                        qos = 'at_least_once' :: qos_level() }).
 
--record(qos, { level = 1 :: 1 | 2,
+-record(qos, { level = 'at_most_once' :: 'at_most_once'
+                                       | 'exactly_once',
                message_id = undefined :: message_id() }).
 
 %% frames
@@ -28,7 +29,8 @@
 
 -record(publish, { dup = undefined :: boolean(),
                    retain = undefined :: boolean(),
-                   qos = 0 :: 0 | #qos{},
+                   qos = 'at_least_once' :: 'at_least_once'
+                                          | #qos{},
                    topic = undefined :: binary(),
                    payload = undefined :: binary() }).
 
