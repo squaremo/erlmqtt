@@ -121,13 +121,10 @@ parse(Bin) ->
     end.
 
 -spec(start(binary()) -> parse_result()).
-start(<<MessageType:4, Dup:1, QoS:2, Retain:1, Len1:8,
+start(<<MessageType:4, Flags:4, Len1:8,
        Rest/binary>>) ->
     %% Invalid values?
-    parse_from_length(MessageType,
-                      #fixed{ dup = flag(Dup),
-                              qos = QoS,
-                              retain = flag(Retain)},
+    parse_from_length(MessageType, Flags,
                       Len1, 1, 0, Rest);
 %% Not enough to even get the first bit of the header. This might
 %% happen if a frame is split across packets. We don't expect to split
@@ -136,60 +133,61 @@ start(Bin1) ->
     {more, fun(Bin2) -> start(<<Bin1/binary, Bin2/binary>>) end}.
 
 
-parse_from_length(Type, Fixed, LenByte, Multiplier0, Value0, Bin) ->
+parse_from_length(Type, Flags, LenByte, Multiplier0, Value0, Bin) ->
     Length = Value0 + (LenByte band ?Lower7) * Multiplier0,
     case LenByte band ?Top1 of
         ?Top1 ->
             Multiplier = Multiplier0 * 128,
             case Bin of
                 <<NextLenByte:8, Rest/binary>> ->
-                    parse_from_length(Type, Fixed, NextLenByte, Multiplier,
+                    parse_from_length(Type, Flags,
+                                      NextLenByte, Multiplier,
                                       Length, Rest);
                 <<>> ->
                     %% Assumes we get at least one more byte ..
                     {more, fun(<<NextLenByte:8, Rest/binary>>) ->
-                                   parse_from_length(Type, Fixed,
+                                   parse_from_length(Type, Flags,
                                                      NextLenByte,
                                                      Multiplier,
                                                      Length, Rest)
                            end}
             end;
         0 -> % No continuation bit
-            parse_variable_header(Type, Fixed, Length, Bin)
+            parse_variable_header(Type, Flags, Length, Bin)
     end.
 
 %% Each message type has its own idea of what the variable header
 %% contains.  We may as well read until we have the entire frame first
 %% though.
-parse_variable_header(Type, Fixed = #fixed{}, Length, Bin) ->
+parse_variable_header(Type, Flags, Length, Bin) ->
     case Bin of
         <<FrameRest:Length/binary, Rest/binary>> ->
-            case parse_message_type(Type, Fixed, FrameRest) of
+            case parse_message_type(Type, Flags, FrameRest) of
                 Err = {error, _} ->
                     Err;
                 {ok, Frame} ->
                     {frame, Frame, Rest}
             end;
         NotEnough ->
-            parse_more_header(Type, Fixed, Length, Length,
+            parse_more_header(Type, Flags, Length, Length,
                               [], NotEnough)
     end.
 
-parse_more_header(Type, Fixed, Length, Needed, FragmentsRev, Bin) ->
+parse_more_header(Type, Flags, Length, Needed, FragmentsRev, Bin) ->
     Got = size(Bin),
     if Got < Needed ->
             {more, fun(NextBin) ->
-                           parse_more_header(Type, Fixed, Length,
+                           parse_more_header(Type, Flags, Length,
                                              Needed - Got,
                                              [Bin | FragmentsRev], NextBin)
                    end};
        true ->
             Fragments = lists:reverse([Bin | FragmentsRev]),
-            parse_variable_header(Type, Fixed, Length,
+            parse_variable_header(Type, Flags, Length,
                                   list_to_binary(Fragments))
     end.
 
-parse_message_type(?CONNECT, Fixed,
+parse_message_type(?CONNECT, _Flags,
                    %% Protocol name, Protocol version
                    <<0, 6, "MQIsdp", 3,
                     %% Flaaaags
@@ -202,8 +200,7 @@ parse_message_type(?CONNECT, Fixed,
     if size(ClientId) > 23 ->
             {error, identifier_rejected};
        true ->
-            C = #connect{ fixed = Fixed,
-                          will = undefined,
+            C = #connect{ will = undefined,
                           clean_session = flag(CleanSession),
                           keep_alive = KeepAlive,
                           client_id = ClientId },
@@ -230,24 +227,30 @@ parse_message_type(?CONNECT, Fixed,
             end
     end;
 
-parse_message_type(?CONNACK, Fixed, <<_Reserved:8, Return:8>>) ->
-    {ok, #connack{ fixed = Fixed,
-                   return_code = byte_to_return_code(Return) }};
+parse_message_type(?CONNACK, _Flags, <<_Reserved:8, Return:8>>) ->
+    {ok, #connack{ return_code = byte_to_return_code(Return) }};
 
-parse_message_type(?PUBLISH, Fixed, <<TopicLen:16, Topic:TopicLen/binary,
-                                     MsgId:16,
-                                     Payload/binary>>) ->
-    {ok, #publish{ fixed = Fixed, topic = Topic, message_id = MsgId,
+parse_message_type(?PUBLISH, Flags,
+                   <<TopicLen:16, Topic:TopicLen/binary,
+                    MsgId:16, Payload/binary>>) ->
+    Dup = flag(Flags band 2#1000),
+    Retain = flag(Flags band 2#0001),
+    Qos = (Flags band 2#0110) bsr 1,
+    {ok, #publish{ dup = Dup, retain = Retain, qos = Qos,
+                   topic = Topic, message_id = MsgId,
                    payload = Payload }};
 
-parse_message_type(?PUBACK, Fixed, <<MessageId:16>>) ->
-    {ok, #puback{ fixed = Fixed, message_id = MessageId }};
-parse_message_type(?PUBREC, Fixed, <<MessageId:16>>) ->
-    {ok, #pubrec{ fixed = Fixed, message_id = MessageId }};
-parse_message_type(?PUBREL, Fixed, <<MessageId:16>>) ->
-    {ok, #pubrel{ fixed = Fixed, message_id = MessageId }};
-parse_message_type(?PUBCOMP, Fixed, <<MessageId:16>>) ->
-    {ok, #pubcomp{ fixed = Fixed, message_id = MessageId }};
+parse_message_type(?PUBACK, _Flags, <<MessageId:16>>) ->
+    {ok, #puback{ message_id = MessageId }};
+parse_message_type(?PUBREC, _Flags, <<MessageId:16>>) ->
+    {ok, #pubrec{ message_id = MessageId }};
+parse_message_type(?PUBREL, Flags, <<MessageId:16>>) ->
+    Dup = flag(Flags band 2#1000),
+    Qos = (Flags band 2#0110) bsr 1,
+    {ok, #pubrel{ dup = Dup, qos = Qos,
+                  message_id = MessageId }};
+parse_message_type(?PUBCOMP, _Flags, <<MessageId:16>>) ->
+    {ok, #pubcomp{ message_id = MessageId }};
 
 parse_message_type(_, _, _) ->
     {error, unrecognised}.
@@ -269,8 +272,9 @@ maybe_s({ok, Frame, Bin}, 1, Setter) ->
             {ok, Setter(Frame, String), Rest}
     end.
 
+%% To avoid a bitshift, accept any non-zero value as true
 flag(0) -> false;
-flag(1) -> true.
+flag(_) -> true.
 
 -spec(byte_to_return_code(byte()) -> return_code()). 
 byte_to_return_code(0) -> ok;
@@ -295,14 +299,13 @@ return_code_to_byte(Else) -> throw({unknown_return_code, Else}).
 
 -spec(serialise(mqtt_frame()) -> iolist() | binary()).
 
-serialise(#connect{ fixed = Fixed,
-                    clean_session = Clean,
+serialise(#connect{ clean_session = Clean,
                     will = Will,
                     username = Username,
                     password = Password,
                     client_id = ClientId,
                     keep_alive = KeepAlive }) ->
-    FixedByte = fixed_byte(?CONNECT, Fixed),
+    FixedByte = fixed_byte(?CONNECT),
 
     WillQos = ?undefined(Will, 0, Will#will.qos),
     WillRetain = ?undefined(Will, false, Will#will.retain),
@@ -328,18 +331,18 @@ serialise(#connect{ fixed = Fixed,
       KeepAlive:16>>,
      Strings];
 
-serialise(#connack{ fixed = Fixed, return_code = ReturnCode }) ->
-    FixedByte = fixed_byte(?CONNACK, Fixed),
+serialise(#connack{ return_code = ReturnCode }) ->
+    FixedByte = fixed_byte(?CONNACK),
     <<FixedByte:8,
      2:8, %% always 2
      0:8, %% reserved
      (return_code_to_byte(ReturnCode)):8>>;
 
-serialise(#publish{ fixed = Fixed,
+serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
                     topic = Topic,
                     message_id = MessageId,
                     payload = Payload }) ->
-    FixedByte = fixed_byte(?PUBLISH, Fixed),
+    FixedByte = fixed_byte(?PUBLISH, Dup, Qos, Retain),
     TopicSize = size(Topic),
     {Num, Bits} = encode_length(2 + TopicSize + %% topic len + bytes
                                 2 + %% 16-bit message id
@@ -348,14 +351,14 @@ serialise(#publish{ fixed = Fixed,
       TopicSize:16, Topic/binary,
       MessageId:16>>, Payload];
 
-serialise(#puback{ fixed = Fixed, message_id = MsgId }) ->
-    <<(fixed_byte(?PUBACK, Fixed)):8, 2:8, MsgId:16>>;
-serialise(#pubrec{ fixed = Fixed, message_id = MsgId }) ->
-    <<(fixed_byte(?PUBREC, Fixed)):8, 2:8, MsgId:16>>;
-serialise(#pubrel{ fixed = Fixed, message_id = MsgId }) ->
-    <<(fixed_byte(?PUBREL, Fixed)):8, 2:8, MsgId:16>>;
-serialise(#pubcomp{ fixed = Fixed, message_id = MsgId }) ->
-    <<(fixed_byte(?PUBCOMP, Fixed)):8, 2:8, MsgId:16>>;
+serialise(#puback{ message_id = MsgId }) ->
+    <<(fixed_byte(?PUBACK)):8, 2:8, MsgId:16>>;
+serialise(#pubrec{ message_id = MsgId }) ->
+    <<(fixed_byte(?PUBREC)):8, 2:8, MsgId:16>>;
+serialise(#pubrel{ dup = Dup, qos = Qos, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBREL, Dup, Qos, false)):8, 2:8, MsgId:16>>;
+serialise(#pubcomp{ message_id = MsgId }) ->
+    <<(fixed_byte(?PUBCOMP)):8, 2:8, MsgId:16>>;
 
 serialise(Else) ->
     throw({unserialisable, Else}).
@@ -382,13 +385,16 @@ encode_length(L, Bits, Sum) ->
             end,
     encode_length(X, Bits + 8, (Sum bsl 8) + Digit).
 
-fixed_byte(Type, #fixed{ dup = Dup,
-                         qos = Qos,
-                         retain = Retain }) ->
+%% Many message types use none of the flags: for these, assume default
+%% (ignored) values.
+fixed_byte(MessageType) ->
+    fixed_byte(MessageType, false, 0, false).
+
+fixed_byte(Type, Dup, Qos, Retain) ->
     (Type bsl 4) +
-    flag_bit(Dup, 3) +
-    (Qos bsl 1) +
-    flag_bit(Retain, 0).
+        flag_bit(Dup, 3) +
+        (Qos bsl 1) +
+        flag_bit(Retain, 0).
 
 flag_bit(false, _)  -> 0;
 flag_bit(true, Bit) -> 1 bsl Bit.
