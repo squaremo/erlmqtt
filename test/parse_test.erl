@@ -57,3 +57,12 @@ parse_invalid_qos_test() ->
 parse_invalid_sub_qos_test() ->
     C = <<128,8,0,1, 0,3,102,111,111,4>>,
     {error, {unparsable_as_sub, _}} = mqtt_framing:parse(C).
+
+parse_invalid_pubrel_qos_test() ->
+    C = <<100, 2, 0,23>>, %% 100 = ?PUBREL + qos_flag(2)
+    {error, {invalid_qos_value, 2}} = mqtt_framing:parse(C).
+
+parse_qos0_publish_test() ->
+    C = <<48,2,0,0>>,
+    {frame, #publish{ message_id = undefined }, _} =
+        mqtt_framing:parse(C).

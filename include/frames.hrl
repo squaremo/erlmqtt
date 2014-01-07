@@ -19,13 +19,15 @@
                    client_id = undefined :: mqtt_framing:client_id(),
                    keep_alive = undefined :: 0..16#ffff }).
 
--record(connack, { return_code = ok :: mqtt_framing:return_code() }).
+-record(connack, {
+          return_code = ok :: mqtt_framing:return_code() }).
 
 -record(publish, { dup = undefined :: boolean(),
                    retain = undefined :: boolean(),
-                   qos = undefined :: mqtt_framing:qos(),
+                   qos = 0 :: 0 | 1 | 2,
                    topic = undefined :: binary(),
-                   message_id = undefined :: mqtt_framing:message_id(),
+                   message_id = undefined :: 'undefined'
+                                          | mqtt_framing:message_id(),
                    payload = undefined :: binary() }).
 
 -record(puback, {
@@ -36,7 +38,7 @@
 
 -record(pubrel, {
           dup = undefined :: boolean(),
-          qos = undefined :: mqtt_framing:qos(),
+          qos = undefined :: 1,
           message_id = undefined :: mqtt_framing:message_id() }).
 
 -record(pubcomp, {

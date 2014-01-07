@@ -46,7 +46,9 @@
 -type(mqtt_frame() ::
         #connect{}
       | #connack{}
-      | #publish{}
+      | mqtt_publish(0, 'undefined')
+      | mqtt_publish(1 | 2,
+                     mqtt_framing:message_id())
       | #puback{}
       | #pubrec{}
       | #pubrel{}
@@ -59,8 +61,12 @@
       | 'pingresp'
       | 'disconnect').
 
+-type(mqtt_publish(Qos, Id) ::
+      #publish{ qos :: Qos,
+                message_id :: Id }).
 
 -type(qos() :: 0 | 1 | 2).
+
 -type(message_type() ::
       ?CONNECT
     | ?CONNACK
@@ -133,8 +139,7 @@ parse(Bin) ->
 start(<<MessageType:4, Flags:4, Len1:8,
        Rest/binary>>) ->
     %% Invalid values?
-    parse_from_length(MessageType, Flags,
-                      Len1, 1, 0, Rest);
+    parse_from_length(MessageType, Flags, Len1, 1, 0, Rest);
 %% Not enough to even get the first bit of the header. This might
 %% happen if a frame is split across packets. We don't expect to split
 %% across more than two packets.
@@ -241,11 +246,19 @@ parse_message_type(?CONNACK, _Flags, <<_Reserved:8, Return:8>>) ->
 
 parse_message_type(?PUBLISH, Flags,
                    <<TopicLen:16, Topic:TopicLen/binary,
-                    MessageId:16, Payload/binary>>) ->
-    check_message_id(MessageId),
+                    MessageIdAndPayload/binary>>) ->
     Dup = dup_flag(Flags),
     Retain = retain_flag(Flags),
     Qos = qos_flag(Flags),
+    {MessageId, Payload} =
+        case Qos of
+            0 ->
+                {undefined, MessageIdAndPayload};
+            _ ->
+                <<MsgId:16, P/binary>> = MessageIdAndPayload,
+                check_message_id(MsgId),
+                {MsgId, P}
+        end,
     {ok, #publish{ dup = Dup, retain = Retain, qos = Qos,
                    topic = Topic, message_id = MessageId,
                    payload = Payload }};
@@ -259,7 +272,10 @@ parse_message_type(?PUBREC, _Flags, <<MessageId:16>>) ->
 parse_message_type(?PUBREL, Flags, <<MessageId:16>>) ->
     check_message_id(MessageId),
     Dup = dup_flag(Flags),
-    Qos = qos_flag(Flags),
+    Qos = case qos_flag(Flags) of
+              1    -> 1;
+              Else -> throw({invalid_qos_value, Else})
+          end,
     {ok, #pubrel{ dup = Dup, qos = Qos,
                   message_id = MessageId }};
 parse_message_type(?PUBCOMP, _Flags, <<MessageId:16>>) ->
@@ -376,8 +392,7 @@ return_code_to_byte(wrong_version) -> 1;
 return_code_to_byte(bad_id) -> 2;
 return_code_to_byte(server_unavailable) -> 3;
 return_code_to_byte(bad_auth) -> 4;
-return_code_to_byte(not_authorised) -> 5;
-return_code_to_byte(Else) -> throw({unknown_return_code, Else}).
+return_code_to_byte(not_authorised) -> 5.
 
 %% To enforce the type of message_id when parsing arbitrary binaries.
 check_message_id(Id) when Id > 0, Id < 16#ffff ->
@@ -434,19 +449,28 @@ serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
                     payload = Payload }) ->
     FixedByte = fixed_byte(?PUBLISH, Dup, Qos, Retain),
     TopicSize = size(Topic),
-    {Num, Bits} = encode_length(2 + TopicSize + %% topic len + bytes
-                                2 + %% 16-bit message id
-                                size(Payload)),
-    [<<FixedByte:8, Num:Bits,
-      TopicSize:16, Topic/binary,
-      MessageId:16>>, Payload];
+    case Qos of
+        0 ->
+            MessageId = undefined,
+            {Num, Bits} = encode_length(2 + TopicSize +
+                                        size(Payload)),
+            [<<FixedByte:8, Num:Bits,
+              TopicSize:16, Topic/binary>>, Payload];
+        _ ->
+            {Num, Bits} = encode_length(2 + TopicSize +
+                                        2 + %% message id
+                                        size(Payload)),
+            [<<FixedByte:8, Num:Bits,
+              TopicSize:16, Topic/binary,
+              MessageId:16>>, Payload]
+    end;
 
 serialise(#puback{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBACK)):8, 2:8, MsgId:16>>;
 serialise(#pubrec{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBREC)):8, 2:8, MsgId:16>>;
-serialise(#pubrel{ dup = Dup, qos = Qos, message_id = MsgId }) ->
-    <<(fixed_byte(?PUBREL, Dup, Qos, false)):8, 2:8, MsgId:16>>;
+serialise(#pubrel{ dup = Dup, qos = 1, message_id = MsgId }) ->
+    <<(fixed_byte(?PUBREL, Dup, 1, false)):8, 2:8, MsgId:16>>;
 serialise(#pubcomp{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBCOMP)):8, 2:8, MsgId:16>>;
 
