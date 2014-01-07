@@ -7,14 +7,14 @@
 
 -export([parse/1, serialise/1]).
 
--export_type([return_code/0,
+-export_type([mqtt_frame/0,
+              return_code/0,
               parse_result/0,
               message_type/0,
               message_id/0,
               qos/0,
-              mqtt_frame/0,
+              subscriptions/0,
               client_id/0]).
-
 
 -define(Top1, 128).
 -define(Lower7, 127).
@@ -43,7 +43,6 @@
 
 -include("include/frames.hrl").
 
-
 -type(mqtt_frame() ::
         #connect{}
       | #connack{}
@@ -51,7 +50,15 @@
       | #puback{}
       | #pubrec{}
       | #pubrel{}
-      | #pubcomp{}).
+      | #pubcomp{}
+      | #subscribe{}
+      | #suback{}
+      | #unsubscribe{}
+      | #unsuback{}
+      | 'pingreq'
+      | 'pingresp'
+      | 'disconnect').
+
 
 -type(qos() :: 0 | 1 | 2).
 -type(message_type() ::
@@ -83,6 +90,8 @@
 -type(client_id() :: <<_:8, _:_*8>>).
 
 -type(message_id() :: 1..16#ffff).
+
+-type(subscriptions() :: [#subscription{}]).
 
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
@@ -232,33 +241,97 @@ parse_message_type(?CONNACK, _Flags, <<_Reserved:8, Return:8>>) ->
 
 parse_message_type(?PUBLISH, Flags,
                    <<TopicLen:16, Topic:TopicLen/binary,
-                    MsgId:16, Payload/binary>>) ->
-    Dup = flag(Flags band 2#1000),
-    Retain = flag(Flags band 2#0001),
-    Qos = (Flags band 2#0110) bsr 1,
+                    MessageId:16, Payload/binary>>) ->
+    check_message_id(MessageId),
+    Dup = dup_flag(Flags),
+    Retain = retain_flag(Flags),
+    Qos = qos_flag(Flags),
     {ok, #publish{ dup = Dup, retain = Retain, qos = Qos,
-                   topic = Topic, message_id = MsgId,
+                   topic = Topic, message_id = MessageId,
                    payload = Payload }};
 
 parse_message_type(?PUBACK, _Flags, <<MessageId:16>>) ->
+    check_message_id(MessageId),
     {ok, #puback{ message_id = MessageId }};
 parse_message_type(?PUBREC, _Flags, <<MessageId:16>>) ->
+    check_message_id(MessageId),
     {ok, #pubrec{ message_id = MessageId }};
 parse_message_type(?PUBREL, Flags, <<MessageId:16>>) ->
-    Dup = flag(Flags band 2#1000),
-    Qos = (Flags band 2#0110) bsr 1,
+    check_message_id(MessageId),
+    Dup = dup_flag(Flags),
+    Qos = qos_flag(Flags),
     {ok, #pubrel{ dup = Dup, qos = Qos,
                   message_id = MessageId }};
 parse_message_type(?PUBCOMP, _Flags, <<MessageId:16>>) ->
+    check_message_id(MessageId),
     {ok, #pubcomp{ message_id = MessageId }};
+
+parse_message_type(?SUBSCRIBE, Flags,
+                   <<MessageId:16, SubsBin/binary>>) ->
+    check_message_id(MessageId),
+    Qos = qos_flag(Flags),
+    Dup = dup_flag(Flags),
+    Subs = parse_subs(SubsBin, []),
+    {ok, #subscribe{ dup = Dup, qos = Qos,
+                     message_id = MessageId, subscriptions = Subs }};
+
+parse_message_type(?SUBACK, _Flags,
+                   <<MessageId:16, QosBin/binary>>) ->
+    check_message_id(MessageId),
+    {ok, #suback{ message_id = MessageId,
+                  qoses = parse_qoses(QosBin, []) }};
+
+parse_message_type(?UNSUBSCRIBE, Flags,
+                   <<MessageId:16, TopicsBin/binary>>) ->
+    check_message_id(MessageId),
+    Topics = parse_topics(TopicsBin, []),
+    {ok, #unsubscribe{ message_id = MessageId,
+                       qos = qos_flag(Flags),
+                       topics = Topics }};
+
+parse_message_type(?UNSUBACK, _Flags,
+                   <<MessageId:16>>) ->
+    check_message_id(MessageId),
+    {ok, #unsuback{ message_id = MessageId }};
+
+parse_message_type(?PINGREQ, _Flags, <<>>) ->
+    {ok, pingreq};
+parse_message_type(?PINGRESP, _Flags, <<>>) ->
+    {ok, pingresp};
+parse_message_type(?DISCONNECT, _Flags, <<>>) ->
+    {ok, disconnect};
 
 parse_message_type(_, _, _) ->
     {error, unrecognised}.
+
+
 
 parse_string(<<Length:16, String:Length/binary, Rest/binary>>) ->
     {String, Rest};
 parse_string(_Bin) ->
     {error, malformed_frame}.
+
+parse_subs(<<>>, Subs) ->
+    lists:reverse(Subs);
+parse_subs(<<Len:16, Topic:Len/binary, _:6, Qos:2, Rest/binary>>,
+           Subs) ->
+    parse_subs(Rest, [#subscription{ topic = Topic, qos = Qos } | Subs]);
+parse_subs(Else, _Subs) ->
+    throw({unparsable_as_sub, Else}).
+
+parse_qoses(<<>>, Qoses) ->
+    lists:reverse(Qoses);
+parse_qoses(<<0:6, Qos:2, Rest/binary>>, Qoses) ->
+    parse_qoses(Rest, [Qos | Qoses]);
+parse_qoses(Else, _) ->
+    throw({unparsable_as_qos, Else}).
+
+parse_topics(<<>>, Topics) ->
+    lists:reverse(Topics);
+parse_topics(<<Len:16, Topic:Len/binary, Rest/binary>>, Topics) ->
+    parse_topics(Rest, [Topic | Topics]);
+parse_topics(Else, _Topics) ->
+    throw({unparsable_as_topic, Else}).
 
 maybe_s(Err = {error, _}, _, _) ->
     Err;
@@ -275,6 +348,18 @@ maybe_s({ok, Frame, Bin}, 1, Setter) ->
 %% To avoid a bitshift, accept any non-zero value as true
 flag(0) -> false;
 flag(_) -> true.
+
+qos_flag(Flags) ->
+    case (Flags band 2#0110) bsr 1 of
+        3 -> throw({invalid_qos_value, 3});
+        Q -> Q
+    end.
+
+dup_flag(Flags) ->
+    flag(Flags band 2#1000).
+
+retain_flag(Flags) ->
+    flag(Flags band 2#0001).
 
 -spec(byte_to_return_code(byte()) -> return_code()). 
 byte_to_return_code(0) -> ok;
@@ -293,6 +378,12 @@ return_code_to_byte(server_unavailable) -> 3;
 return_code_to_byte(bad_auth) -> 4;
 return_code_to_byte(not_authorised) -> 5;
 return_code_to_byte(Else) -> throw({unknown_return_code, Else}).
+
+%% To enforce the type of message_id when parsing arbitrary binaries.
+check_message_id(Id) when Id > 0, Id < 16#ffff ->
+    ok;
+check_message_id(Else) ->
+    throw({out_of_bounds_message_id, Else}).
 
 
 %% --- serialise
@@ -359,6 +450,41 @@ serialise(#pubrel{ dup = Dup, qos = Qos, message_id = MsgId }) ->
     <<(fixed_byte(?PUBREL, Dup, Qos, false)):8, 2:8, MsgId:16>>;
 serialise(#pubcomp{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBCOMP)):8, 2:8, MsgId:16>>;
+
+serialise(#subscribe{ dup = Dup, qos = SubQos,
+                      message_id = MessageId,
+                      subscriptions = Subs }) ->
+    SubsBin = << <<(size(Topic)):16, Topic/binary, 0:6, Qos:2>> ||
+                  #subscription{ topic = Topic,
+                                 qos = Qos } <- Subs >>,
+    {Num, Bits} = encode_length(2 + size(SubsBin)),
+    [<<(fixed_byte(?SUBSCRIBE, Dup, SubQos, false)):8,
+      Num:Bits, MessageId:16>>, SubsBin];
+
+serialise(#suback{ message_id = MessageId,
+                   qoses = Qoses }) ->
+    QosesBin = << <<0:6, Qos:2>> || Qos <- Qoses>>,
+    {Num, Bits} = encode_length(2 + size(QosesBin)),
+    <<(fixed_byte(?SUBACK)):8, Num:Bits,
+     MessageId:16, QosesBin/binary>>;
+
+serialise(#unsubscribe{ message_id = MessageId,
+                        qos = Qos,
+                        topics = Topics }) ->
+    TopicsBin = << <<(size(T)):16, T/binary>> || T <- Topics >>,
+    {Num, Bits} = encode_length(2 + size(TopicsBin)),
+    [<<(fixed_byte(?UNSUBSCRIBE, false, Qos, false)):8,
+      Num:Bits, MessageId:16>>, TopicsBin];
+
+serialise(#unsuback{ message_id = MessageId }) ->
+    <<(fixed_byte(?UNSUBACK)):8, 2:8, MessageId:16>>;
+
+serialise(pingreq) ->
+    <<?PINGREQ:4, 0:4, 0:8>>;
+serialise(pingresp) ->
+    <<?PINGRESP:4, 0:4, 0:8>>;
+serialise(disconnect) ->
+    <<?DISCONNECT:4, 0:4, 0:8>>;
 
 serialise(Else) ->
     throw({unserialisable, Else}).

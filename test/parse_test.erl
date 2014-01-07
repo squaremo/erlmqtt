@@ -33,3 +33,18 @@ parse_connect_test() ->
 parse_reserved_return_code_test() ->
     C = <<32,2,0,45>>,
     {error, {reserved_return_code, 45}} = mqtt_framing:parse(C).
+
+parse_oob_message_id_test() ->
+    C = <<64, 2, 0, 0>>,
+    {error, {out_of_bounds_message_id, 0}} = mqtt_framing:parse(C).
+
+%% QoS occupies only the lowest two bits of each byte in suback
+parse_bad_qoses_test() ->
+    C = <<144, 3, 0,1, 100>>,
+    {error, {unparsable_as_qos, <<100>>}} = mqtt_framing:parse(C).
+
+%% QoS must be 0|1|2 but is encoded in two bits, which admits 3 as a
+%% value.
+parse_invalid_qos_test() ->
+    C = <<102,2,0,1>>,
+    {error, {invalid_qos_value, 3}} = mqtt_framing:parse(C).
