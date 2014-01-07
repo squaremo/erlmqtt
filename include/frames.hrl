@@ -5,17 +5,19 @@
 
 -record(will, { topic = undefined :: binary(),
                 message = undefined :: binary(),
-                qos = undefined :: qos(),
-                retain = undefined :: boolean() }).
+                qos = 0 :: qos_level(),
+                retain = false :: boolean() }).
 
 -record(subscription, { topic = undefined :: binary(),
-                        qos = undefined :: qos() }).
+                        qos = 0 :: qos_level() }).
+
+-record(qos, { level = 1 :: 1 | 2,
+               message_id = undefined :: message_id() }).
 
 %% frames
 
 -record(connect, { clean_session = undefined :: boolean(),
-                   will = undefined :: #will{}
-                                     | 'undefined',
+                   will = undefined :: #will{} | 'undefined',
                    username = undefined :: binary() | 'undefined',
                    password = undefined :: binary() | 'undefined',
                    client_id = undefined :: client_id(),
@@ -26,10 +28,8 @@
 
 -record(publish, { dup = undefined :: boolean(),
                    retain = undefined :: boolean(),
-                   qos = 0 :: 0 | 1 | 2,
+                   qos = 0 :: 0 | #qos{},
                    topic = undefined :: binary(),
-                   message_id = undefined :: 'undefined'
-                                          | message_id(),
                    payload = undefined :: binary() }).
 
 -record(puback, {
@@ -40,7 +40,6 @@
 
 -record(pubrel, {
           dup = undefined :: boolean(),
-          qos = undefined :: 1,
           message_id = undefined :: message_id() }).
 
 -record(pubcomp, {
@@ -48,18 +47,16 @@
 
 -record(subscribe, {
           dup = undefined :: boolean(),
-          qos = undefined :: qos(),
           message_id = undefined :: message_id(),
           subscriptions = undefined :: subscriptions() }).
 
 -record(suback, {
           message_id = undefined :: message_id(),
-          qoses = undefined :: [qos()] }).
+          qoses = undefined :: [qos_level()] }).
 
 -record(unsubscribe, {
           message_id = undefined :: message_id(),
-          qos = undefined :: qos(),
-          topics = undefined :: [binary()] }).
+          topics = [] :: [binary()] }).
 
 -record(unsuback, {
           message_id = undefined :: message_id() }).

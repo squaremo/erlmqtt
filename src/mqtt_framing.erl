@@ -171,19 +171,19 @@ parse_message_type(?PUBLISH, Flags,
                     MessageIdAndPayload/binary>>) ->
     Dup = dup_flag(Flags),
     Retain = retain_flag(Flags),
-    Qos = qos_flag(Flags),
-    {MessageId, Payload} =
-        case Qos of
+    QosLevel = qos_flag(Flags),
+    {Qos, Payload} =
+        case QosLevel of
             0 ->
-                {undefined, MessageIdAndPayload};
+                {0, MessageIdAndPayload};
             _ ->
                 <<MsgId:16, P/binary>> = MessageIdAndPayload,
                 check_message_id(MsgId),
-                {MsgId, P}
+                {#qos{ message_id = MsgId,
+                       level = QosLevel }, P}
         end,
     {ok, #publish{ dup = Dup, retain = Retain, qos = Qos,
-                   topic = Topic, message_id = MessageId,
-                   payload = Payload }};
+                   topic = Topic, payload = Payload }};
 
 parse_message_type(?PUBACK, _Flags, <<MessageId:16>>) ->
     check_message_id(MessageId),
@@ -193,13 +193,9 @@ parse_message_type(?PUBREC, _Flags, <<MessageId:16>>) ->
     {ok, #pubrec{ message_id = MessageId }};
 parse_message_type(?PUBREL, Flags, <<MessageId:16>>) ->
     check_message_id(MessageId),
+    check_qos_1(Flags),
     Dup = dup_flag(Flags),
-    Qos = case qos_flag(Flags) of
-              1    -> 1;
-              Else -> throw({invalid_qos_value, Else})
-          end,
-    {ok, #pubrel{ dup = Dup, qos = Qos,
-                  message_id = MessageId }};
+    {ok, #pubrel{ dup = Dup, message_id = MessageId }};
 parse_message_type(?PUBCOMP, _Flags, <<MessageId:16>>) ->
     check_message_id(MessageId),
     {ok, #pubcomp{ message_id = MessageId }};
@@ -207,11 +203,12 @@ parse_message_type(?PUBCOMP, _Flags, <<MessageId:16>>) ->
 parse_message_type(?SUBSCRIBE, Flags,
                    <<MessageId:16, SubsBin/binary>>) ->
     check_message_id(MessageId),
-    Qos = qos_flag(Flags),
+    check_qos_1(Flags),
     Dup = dup_flag(Flags),
     Subs = parse_subs(SubsBin, []),
-    {ok, #subscribe{ dup = Dup, qos = Qos,
-                     message_id = MessageId, subscriptions = Subs }};
+    {ok, #subscribe{ dup = Dup,
+                     message_id = MessageId,
+                     subscriptions = Subs }};
 
 parse_message_type(?SUBACK, _Flags,
                    <<MessageId:16, QosBin/binary>>) ->
@@ -222,9 +219,9 @@ parse_message_type(?SUBACK, _Flags,
 parse_message_type(?UNSUBSCRIBE, Flags,
                    <<MessageId:16, TopicsBin/binary>>) ->
     check_message_id(MessageId),
+    check_qos_1(Flags),
     Topics = parse_topics(TopicsBin, []),
     {ok, #unsubscribe{ message_id = MessageId,
-                       qos = qos_flag(Flags),
                        topics = Topics }};
 
 parse_message_type(?UNSUBACK, _Flags,
@@ -322,6 +319,12 @@ check_message_id(Id) when Id > 0, Id < 16#ffff ->
 check_message_id(Else) ->
     throw({out_of_bounds_message_id, Else}).
 
+%% To enforce the frames for which the QoS is always 1
+check_qos_1(Flags) ->
+    case qos_flag(Flags) of
+        1    -> ok;
+        Else -> throw({invalid_qos_value, Else})
+    end.
 
 %% --- serialise
 
@@ -367,18 +370,18 @@ serialise(#connack{ return_code = ReturnCode }) ->
 
 serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
                     topic = Topic,
-                    message_id = MessageId,
                     payload = Payload }) ->
-    FixedByte = fixed_byte(?PUBLISH, Dup, Qos, Retain),
     TopicSize = size(Topic),
     case Qos of
         0 ->
-            MessageId = undefined,
+            FixedByte = fixed_byte(?PUBLISH, Dup, 0, Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         size(Payload)),
             [<<FixedByte:8, Num:Bits,
               TopicSize:16, Topic/binary>>, Payload];
-        _ ->
+        #qos{ level = QosLevel,
+              message_id = MessageId } ->
+            FixedByte = fixed_byte(?PUBLISH, Dup, QosLevel, Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         2 + %% message id
                                         size(Payload)),
@@ -391,19 +394,19 @@ serialise(#puback{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBACK)):8, 2:8, MsgId:16>>;
 serialise(#pubrec{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBREC)):8, 2:8, MsgId:16>>;
-serialise(#pubrel{ dup = Dup, qos = 1, message_id = MsgId }) ->
+serialise(#pubrel{ dup = Dup, message_id = MsgId }) ->
     <<(fixed_byte(?PUBREL, Dup, 1, false)):8, 2:8, MsgId:16>>;
 serialise(#pubcomp{ message_id = MsgId }) ->
     <<(fixed_byte(?PUBCOMP)):8, 2:8, MsgId:16>>;
 
-serialise(#subscribe{ dup = Dup, qos = SubQos,
+serialise(#subscribe{ dup = Dup,
                       message_id = MessageId,
                       subscriptions = Subs }) ->
     SubsBin = << <<(size(Topic)):16, Topic/binary, Qos:8>> ||
                   #subscription{ topic = Topic,
                                  qos = Qos } <- Subs >>,
     {Num, Bits} = encode_length(2 + size(SubsBin)),
-    [<<(fixed_byte(?SUBSCRIBE, Dup, SubQos, false)):8,
+    [<<(fixed_byte(?SUBSCRIBE, Dup, 1, false)):8,
       Num:Bits, MessageId:16>>, SubsBin];
 
 serialise(#suback{ message_id = MessageId,
@@ -414,11 +417,10 @@ serialise(#suback{ message_id = MessageId,
      MessageId:16, QosesBin/binary>>;
 
 serialise(#unsubscribe{ message_id = MessageId,
-                        qos = Qos,
                         topics = Topics }) ->
     TopicsBin = << <<(size(T)):16, T/binary>> || T <- Topics >>,
     {Num, Bits} = encode_length(2 + size(TopicsBin)),
-    [<<(fixed_byte(?UNSUBSCRIBE, false, Qos, false)):8,
+    [<<(fixed_byte(?UNSUBSCRIBE, false, 1, false)):8,
       Num:Bits, MessageId:16>>, TopicsBin];
 
 serialise(#unsuback{ message_id = MessageId }) ->

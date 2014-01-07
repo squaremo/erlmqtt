@@ -21,7 +21,7 @@
 -type(mqtt_frame() ::
         #connect{}
       | #connack{}
-      | mqtt_publish()
+      | #publish{}
       | #puback{}
       | #pubrec{}
       | #pubrel{}
@@ -33,14 +33,6 @@
       | 'pingreq'
       | 'pingresp'
       | 'disconnect').
-
--type(mqtt_publish() ::
-        #publish{ qos :: 0,
-                  message_id :: 'undefined' }
-      | #publish{ qos :: 1 | 2,
-                  message_id :: message_id() }).
-
--type(qos() :: 0 | 1 | 2).
 
 -type(message_type() ::
       ?CONNECT
@@ -57,6 +49,8 @@
     | ?PINGREQ
     | ?PINGRESP
     | ?DISCONNECT).
+
+-type(qos_level() :: 0 | 1 | 2).
 
 -type(return_code() :: 'ok'
                      | 'wrong_version'
