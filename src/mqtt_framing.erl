@@ -7,32 +7,8 @@
 
 -export([parse/1, serialise/1]).
 
--export_type([mqtt_frame/0,
-              return_code/0,
-              parse_result/0,
-              message_type/0,
-              message_id/0,
-              qos/0,
-              subscriptions/0,
-              client_id/0]).
-
 -define(Top1, 128).
 -define(Lower7, 127).
-
--define(CONNECT, 1).
--define(CONNACK, 2).
--define(PUBLISH, 3).
--define(PUBACK, 4).
--define(PUBREC, 5).
--define(PUBREL, 6).
--define(PUBCOMP, 7).
--define(SUBSCRIBE, 8).
--define(SUBACK, 9).
--define(UNSUBSCRIBE, 10).
--define(UNSUBACK, 11).
--define(PINGREQ, 12).
--define(PINGRESP, 13).
--define(DISCONNECT, 14).
 
 -define(set(Record, Field), fun(R, V) -> R#Record{ Field = V } end).
 -define(undefined(ExprIn, IfUndefined, IfDefined),
@@ -42,62 +18,8 @@
         end).
 
 -include("include/frames.hrl").
+-include("include/types.hrl").
 
--type(mqtt_frame() ::
-        #connect{}
-      | #connack{}
-      | mqtt_publish(0, 'undefined')
-      | mqtt_publish(1 | 2,
-                     mqtt_framing:message_id())
-      | #puback{}
-      | #pubrec{}
-      | #pubrel{}
-      | #pubcomp{}
-      | #subscribe{}
-      | #suback{}
-      | #unsubscribe{}
-      | #unsuback{}
-      | 'pingreq'
-      | 'pingresp'
-      | 'disconnect').
-
--type(mqtt_publish(Qos, Id) ::
-      #publish{ qos :: Qos,
-                message_id :: Id }).
-
--type(qos() :: 0 | 1 | 2).
-
--type(message_type() ::
-      ?CONNECT
-    | ?CONNACK
-    | ?PUBLISH
-    | ?PUBACK
-    | ?PUBREC
-    | ?PUBREL
-    | ?PUBCOMP
-    | ?SUBSCRIBE
-    | ?SUBACK
-    | ?UNSUBSCRIBE
-    | ?UNSUBACK
-    | ?PINGREQ
-    | ?PINGRESP
-    | ?DISCONNECT).
-
--type(return_code() :: 'ok'
-                     | 'wrong_version'
-                     | 'bad_id'
-                     | 'server_unavailable'
-                     | 'bad_auth'
-                     | 'not_authorised').
-
-%% This isn't quite adequate: client IDs are supposed to be between 1
-%% and 23 characters long; however, Erlang's type notation doesn't let
-%% me express that easily.
--type(client_id() :: <<_:8, _:_*8>>).
-
--type(message_id() :: 1..16#ffff).
-
--type(subscriptions() :: [#subscription{}]).
 
 %% MQTT frames come in three parts: firstly, a fixed header, which is
 %% two to five bytes with some flags, a number denoting the command,
@@ -571,7 +493,7 @@ encode_length_boundary_test_() ->
                              {268435455, 16#ffffff7f, 32}]].
 
 prop_return_code() ->
-    ?FORALL(Code, mqtt_framing:return_code(),
+    ?FORALL(Code, return_code(),
             begin
                 B = return_code_to_byte(Code),
                 C = byte_to_return_code(B),

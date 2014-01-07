@@ -1,5 +1,6 @@
 -module(parse_test).
 
+-include("include/types.hrl").
 -include("include/frames.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
