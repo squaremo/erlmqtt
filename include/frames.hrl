@@ -3,12 +3,12 @@
 
 %% sub-records
 
--record(will, { topic = undefined :: binary(),
-                message = undefined :: binary(),
+-record(will, { topic = <<>> :: binary(),
+                message = <<>> :: binary(),
                 qos = 'at_least_once' :: qos_level(),
                 retain = false :: boolean() }).
 
--record(subscription, { topic = undefined :: binary(),
+-record(subscription, { topic = <<>> :: binary(),
                         qos = 'at_least_once' :: qos_level() }).
 
 -record(qos, { level = 'at_most_once' :: 'at_most_once'
@@ -17,12 +17,12 @@
 
 %% frames
 
--record(connect, { clean_session = undefined :: boolean(),
+-record(connect, { clean_session = true :: boolean(),
                    will = undefined :: #will{} | 'undefined',
-                   username = undefined :: binary() | 'undefined',
-                   password = undefined :: binary() | 'undefined',
+                   username = <<"guest">> :: binary() | 'undefined',
+                   password = <<"guest">> :: binary() | 'undefined',
                    client_id = undefined :: client_id(),
-                   keep_alive = undefined :: 0..16#ffff }).
+                   keep_alive = 0 :: 0..16#ffff }).
 
 -record(connack, {
           return_code = ok :: return_code() }).
