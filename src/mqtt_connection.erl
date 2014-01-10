@@ -3,7 +3,7 @@
 -behaviour(gen_fsm).
 
 %% Public API
--export([start_link/0, connect/4, open/3]).
+-export([start_link/0, connect/4]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3,
@@ -13,8 +13,6 @@
 %% states
 -export([unopened/3]).
 
--type(connection_state() :: 'unopened').
-
 -include("include/types.hrl").
 
 -record(state, {
@@ -22,20 +20,28 @@
           frame_buf = <<>>
          }).
 
+-type(connection() :: pid()).
+
 start_link() ->
     gen_fsm:start_link(?MODULE, [], []).
 
-connect(Conn, Host, Port, ConnectFrame) ->
+-spec(connect(connection(),
+              address(),
+              client_id(),
+              [connect_option()]) -> ok).
+connect(Conn, Address, ClientId, ConnectOpts) ->
+    Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
+    Connect1 = opts(Connect, ConnectOpts),
+    {Host, Port} = make_address(Address),
     {ok, Sock} = gen_tcp:connect(Host, Port,
                                  [{active, false},
                                   binary]),
-    open(Conn, Sock, ConnectFrame).
+    open(Conn, Sock, Connect1).
 
 %% NB this assumes that the calling process controls the socket
 open(Conn, Sock, ConnectFrame) ->
     ok = gen_tcp:controlling_process(Sock, Conn),
     gen_fsm:sync_send_event(Conn, {open, Sock, ConnectFrame}).
-
 
 %%% gen_fsm callbacks
 
@@ -43,6 +49,8 @@ init([]) ->
     {ok, unopened, #state{}}.
 
 %% states
+
+%% worth putting specs on these?
 
 unopened({open, Socket, Connect}, From,
          S0 = #state{ socket = undefined }) ->
@@ -79,10 +87,14 @@ code_change(OldVsn, StateName, StateData, Extra) ->
 
 %%% Internal functions
 
+-spec(write(#state{ socket :: inet:socket() }, mqtt_frame()) ->
+             ok).
 write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
 
+-spec(recv(#state{}) -> {ok, mqtt_frame(), #state{}}
+                      | {error, term()}).
 recv(State = #state{ frame_buf = Buf }) ->
     parse_frame(Buf, State, fun mqtt_framing:parse/1).
 
@@ -118,3 +130,37 @@ frame_error(Conn, Reason) ->
 
 protocol_error(Reason, State) ->
     {error, Reason, State}.
+
+%% Create a frame given the options (fields, effectively) as an alist
+opts(F, []) ->
+    F;
+opts(F, [Opt |Rest]) ->
+    opts(opt(F, Opt), Rest).
+
+opt(C = #connect{}, Opt) ->
+    connect_opt(C, Opt).
+
+-type(connect_option() ::
+      {client_id, client_id()}
+    | {username, binary() | iolist()}
+    | {password, binary() | iolist()}).
+
+-spec(connect_opt(#connect{}, connect_option()) -> #connect{}).
+connect_opt(C = #connect{}, {client_id, Id}) ->
+    C#connect{ client_id = iolist_to_binary([Id]) };
+connect_opt(C = #connect{}, {username, User}) ->
+    C#connect{ username = iolist_to_binary([User])};
+connect_opt(C = #connect{}, {password, Pass}) ->
+    C#connect{ password = iolist_to_binary(Pass)}.
+
+-type(address() ::
+        {host(), inet:port_number()}
+      | host()).
+
+-type(host() :: inet:ip_address() | inet:hostname()).
+
+-spec(make_address(address()) -> {host(), inet:port_number()}).
+make_address(Whole = {Host, Port}) ->
+    Whole;
+make_address(Host) ->
+    {Host, 1883}.
