@@ -61,6 +61,9 @@
                      | 'bad_auth'
                      | 'not_authorised').
 
+-type(topic() :: iolist() | binary()).
+-type(payload() :: iolist() | binary()).
+
 %% This isn't quite adequate: client IDs are supposed to be between 1
 %% and 23 characters long; however, Erlang's type notation doesn't let
 %% me express that easily.

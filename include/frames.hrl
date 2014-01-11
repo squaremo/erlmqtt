@@ -3,12 +3,12 @@
 
 %% sub-records
 
--record(will, { topic = <<>> :: binary(),
-                message = <<>> :: binary(),
+-record(will, { topic = undefined :: topic(),
+                message = undefined :: payload(),
                 qos = 'at_least_once' :: qos_level(),
                 retain = false :: boolean() }).
 
--record(subscription, { topic = <<>> :: binary(),
+-record(subscription, { topic = undefined :: topic(),
                         qos = 'at_least_once' :: qos_level() }).
 
 -record(qos, { level = 'at_most_once' :: 'at_most_once'
@@ -19,20 +19,20 @@
 
 -record(connect, { clean_session = true :: boolean(),
                    will = undefined :: #will{} | 'undefined',
-                   username = <<"guest">> :: binary() | 'undefined',
-                   password = <<"guest">> :: binary() | 'undefined',
+                   username = undefined :: binary() | 'undefined',
+                   password = undefined :: binary() | 'undefined',
                    client_id = undefined :: client_id(),
                    keep_alive = 0 :: 0..16#ffff }).
 
 -record(connack, {
           return_code = ok :: return_code() }).
 
--record(publish, { dup = undefined :: boolean(),
-                   retain = undefined :: boolean(),
+-record(publish, { dup = false :: boolean(),
+                   retain = false :: boolean(),
                    qos = 'at_least_once' :: 'at_least_once'
                                           | #qos{},
-                   topic = undefined :: binary(),
-                   payload = undefined :: binary() }).
+                   topic = undefined :: topic(),
+                   payload = undefined :: payload() }).
 
 -record(puback, {
           message_id = undefined :: message_id() }).
@@ -58,7 +58,7 @@
 
 -record(unsubscribe, {
           message_id = undefined :: message_id(),
-          topics = [] :: [binary()] }).
+          topics = [] :: [topic()] }).
 
 -record(unsuback, {
           message_id = undefined :: message_id() }).

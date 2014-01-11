@@ -358,16 +358,19 @@ serialise(#connect{ clean_session = Clean,
         string_bit(Password, 6) +
         string_bit(Username, 7),
 
-    Strings = << <<(size(Str)):16, Str/binary>> ||
-                  Str <- [ClientId, WillTopic, WillMsg,
-                          Username, Password], is_binary(Str)>>,
-    {LenEncoded, LenSize} = encode_length(12 + size(Strings)),
+    Strings = [norm_string(S) || S <- [ClientId, WillTopic, WillMsg,
+                                       Username, Password]],
+
+    EncStrings = [ <<(size(Str)):16, Str/binary>> ||
+                     Str <- Strings, Str =/= undefined ],
+    {LenEncoded, LenSize} = encode_length(
+                              12 + iolist_size(EncStrings)),
     [<<FixedByte:8,
       LenEncoded:LenSize, %% remaining length
       6:16, "MQIsdp", 3:8, %% protocol name and version
       Flags:8,
       KeepAlive:16>>,
-     Strings];
+     EncStrings];
 
 serialise(#connack{ return_code = ReturnCode }) ->
     FixedByte = fixed_byte(?CONNACK),
@@ -377,14 +380,15 @@ serialise(#connack{ return_code = ReturnCode }) ->
      (return_code_to_byte(ReturnCode)):8>>;
 
 serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
-                    topic = Topic,
+                    topic = Topic0,
                     payload = Payload }) ->
+    Topic = norm_string(Topic0),
     TopicSize = size(Topic),
     case Qos of
         at_least_once ->
             FixedByte = fixed_byte(?PUBLISH, Dup, 0, Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
-                                        size(Payload)),
+                                        iolist_size(Payload)),
             [<<FixedByte:8, Num:Bits,
               TopicSize:16, Topic/binary>>, Payload];
         #qos{ level = QosLevel,
@@ -393,7 +397,7 @@ serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
                                    qos_bits(QosLevel), Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         2 + %% message id
-                                        size(Payload)),
+                                        iolist_size(Payload)),
             [<<FixedByte:8, Num:Bits,
               TopicSize:16, Topic/binary,
               MessageId:16>>, Payload]
@@ -411,11 +415,12 @@ serialise(#pubcomp{ message_id = MsgId }) ->
 serialise(#subscribe{ dup = Dup,
                       message_id = MessageId,
                       subscriptions = Subs }) ->
-    SubsBin = << <<(size(Topic)):16, Topic/binary,
-                  (qos_bits(Qos)):8>> ||
+    SubsBin = [ <<(iolist_size(Topic)):16,
+                 (iolist_to_binary(Topic))/binary,
+                 (qos_bits(Qos)):8>> ||
                   #subscription{ topic = Topic,
-                                 qos = Qos } <- Subs >>,
-    {Num, Bits} = encode_length(2 + size(SubsBin)),
+                                 qos = Qos } <- Subs ],
+    {Num, Bits} = encode_length(2 + iolist_size(SubsBin)),
     [<<(fixed_byte(?SUBSCRIBE, Dup, 1, false)):8,
       Num:Bits, MessageId:16>>, SubsBin];
 
@@ -428,8 +433,10 @@ serialise(#suback{ message_id = MessageId,
 
 serialise(#unsubscribe{ message_id = MessageId,
                         topics = Topics }) ->
-    TopicsBin = << <<(size(T)):16, T/binary>> || T <- Topics >>,
-    {Num, Bits} = encode_length(2 + size(TopicsBin)),
+    TopicsBin = [ <<(iolist_size(T)):16,
+                   (iolist_to_binary(T))/binary>> ||
+                    T <- Topics ],
+    {Num, Bits} = encode_length(2 + iolist_size(TopicsBin)),
     [<<(fixed_byte(?UNSUBSCRIBE, false, 1, false)):8,
       Num:Bits, MessageId:16>>, TopicsBin];
 
@@ -492,6 +499,11 @@ qos_bits(at_least_once) -> 0;
 qos_bits(at_most_once)  -> 1;
 qos_bits(exactly_once)  -> 2.
 
+%% We accept strings, binaries, and iolists for some fields, but the
+%% encoding needs a binary.
+norm_string(undefined) -> undefined;
+norm_string(String) -> iolist_to_binary(String).
+
 %% ---------- properties
 
 -ifdef(TEST).
@@ -528,7 +540,30 @@ prop_roundtrip_frame() ->
                      begin
                          Ser = iolist_to_binary(serialise(Frame)),
                          {frame, F, <<>>} = start(Ser),
-                         F =:= Frame
+                         F =:= binarise(Frame)
                      end)).
+
+binarise(C = #connect{ will = Will,
+                       username = Username,
+                       password = Password,
+                       client_id = ClientId }) ->
+    C#connect{ will = binarise(Will),
+               username = norm_string(Username),
+               password = norm_string(Password),
+               client_id = norm_string(ClientId) };
+binarise(W = #will{ topic = Topic, message = Message }) ->
+    W#will{ topic = norm_string(Topic),
+            message = norm_string(Message) };
+binarise(P = #publish{ topic = Topic, payload = Payload }) ->
+    P#publish{ topic = norm_string(Topic),
+               payload = norm_string(Payload) };
+binarise(S = #subscribe{ subscriptions = Subs }) ->
+    S#subscribe{
+      subscriptions = [ Sub#subscription { topic = norm_string(T) }
+                        || Sub = #subscription{ topic = T }
+                        <- Subs] };
+binarise(U = #unsubscribe{ topics = Topics }) ->
+    U#unsubscribe{ topics = [ norm_string(T) || T <- Topics ] };
+binarise(Else) -> Else.
 
 -endif.
