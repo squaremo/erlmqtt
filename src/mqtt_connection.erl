@@ -5,7 +5,8 @@
 %% Public API
 -export([start_link/0,
          connect/3, connect/4,
-         publish/3, publish/4]).
+         publish/3, publish/4,
+         disconnect/1]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3,
@@ -66,6 +67,9 @@ open(Conn, Sock, ConnectFrame) ->
     ok = gen_tcp:controlling_process(Sock, Conn),
     gen_fsm:sync_send_event(Conn, {open, Sock, ConnectFrame}).
 
+disconnect(Conn) ->
+    gen_fsm:send_event(Conn, disconnect).
+
 %%% gen_fsm callbacks
 
 init([]) ->
@@ -102,7 +106,14 @@ opened({publish, P0}, S0 = #state{ socket = Socket,
                 {P0, S0}
         end,
     write(S1, P1),
-    {next_state, opened, S1}.
+    {next_state, opened, S1};
+
+opened(disconnect, S0 = #state{ socket = Sock,
+                                frame_buf = Buf }) ->
+    ok = write(S0, disconnect),
+    ok = gen_tcp:close(Sock),
+    {next_state, closed, S0#state{ socket = undefined,
+                                   frame_buf = <<>> }}.
 
 %% all states
 
@@ -182,7 +193,9 @@ opt(P = #publish{}, Opt) ->
 -type(connect_option() ::
       {client_id, client_id()}
     | {username, binary() | iolist()}
-    | {password, binary() | iolist()}).
+    | {password, binary() | iolist()}
+    | {will, topic(), payload(), qos_level(), boolean()}
+    | {will, topic(), payload()}).
 
 -spec(connect_opt(#connect{}, connect_option()) -> #connect{}).
 connect_opt(C, {client_id, Id}) ->
@@ -190,7 +203,16 @@ connect_opt(C, {client_id, Id}) ->
 connect_opt(C, {username, User}) ->
     C#connect{ username = iolist_to_binary([User])};
 connect_opt(C, {password, Pass}) ->
-    C#connect{ password = iolist_to_binary(Pass)}.
+    C#connect{ password = iolist_to_binary(Pass)};
+connect_opt(C, {will, Topic, Payload, QoS, Retain}) ->
+    C#connect{ will = #will{ topic = Topic,
+                             message = Payload,
+                             qos = QoS,
+                             retain = Retain } };
+connect_opt(C, {will, Topic, Payload}) ->
+    C#connect{ will = #will{ topic = Topic,
+                             message = Payload,
+                             qos = at_most_once } }.
 
 -type(publish_option() ::
         'dup'
