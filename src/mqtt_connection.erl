@@ -6,6 +6,7 @@
 -export([start_link/0,
          connect/3, connect/4,
          publish/3, publish/4,
+         subscribe/2,
          disconnect/1]).
 
 %% gen_fsm callbacks
@@ -20,7 +21,8 @@
 
 -record(state, {
           socket = undefined,
-          frame_buf = <<>>,
+          parse_fun = undefined,
+          rpcs = gb_trees:empty(),
           id_counter = 1
          }).
 
@@ -49,6 +51,12 @@ connect(Conn, Address, ClientId, ConnectOpts) ->
         E = {error, _} -> E
     end.
 
+%% NB this assumes that the calling process controls the socket
+open(Conn, Sock, ConnectFrame) ->
+    ok = gen_tcp:controlling_process(Sock, Conn),
+    gen_fsm:sync_send_event(Conn, {open, Sock, ConnectFrame}).
+
+
 -spec(publish(connection(), topic(), payload()) -> ok).
 publish(Conn, Topic, Payload) ->
     publish(Conn, Topic, Payload, []).
@@ -62,10 +70,16 @@ publish(Conn, Topic, Payload, Options) ->
     P1 = opts(P0, Options),
     gen_fsm:send_event(Conn, {publish, P1}).
 
-%% NB this assumes that the calling process controls the socket
-open(Conn, Sock, ConnectFrame) ->
-    ok = gen_tcp:controlling_process(Sock, Conn),
-    gen_fsm:sync_send_event(Conn, {open, Sock, ConnectFrame}).
+%% NB this also sends a reply `{suback, Qoses}` to the calling process
+%% when the server has responded.
+-spec(subscribe(connection(), [{topic(), qos_level()}]) ->
+             ok).
+subscribe(Conn, Subs) ->
+    Subscribe = #subscribe{
+      dup = false,
+      subscriptions = [#subscription{ topic = T, qos = Q }
+                       || {T, Q} <- Subs] },
+    gen_fsm:send_event(Conn, {subscribe, Subscribe, self()}).
 
 disconnect(Conn) ->
     gen_fsm:send_event(Conn, disconnect).
@@ -84,8 +98,20 @@ unopened({open, Socket, Connect}, From,
     S = S0#state{ socket = Socket },
     write(S, Connect),
     case recv(S) of
-        {ok, #connack{ return_code = ok }, S1} ->
-            {reply, ok, opened, S1};
+        {ok, #connack{ return_code = ok }, Rest, S1} ->
+            %% this is a little cheat: we're expecting {tcp, Sock,
+            %% Data} packets, and if we have a remainder (somehow)
+            %% after the first frame, we need to process that before
+            %% asking for more.
+            S2 = S1#state{ parse_fun = fun mqtt_framing:parse/1 },
+            S3 = case Rest of
+                     <<>> ->
+                         ask_for_more(S2);
+                     More ->
+                         self ! {tcp, Socket, More},
+                         S2
+                 end,
+            {reply, ok, opened, S3};
         {ok, #connack{ return_code = Else }, S1} ->
             protocol_error(Else, S1);
         {ok, Else, S1} ->
@@ -94,8 +120,7 @@ unopened({open, Socket, Connect}, From,
             frame_error(Reason, S)
     end.
 
-opened({publish, P0}, S0 = #state{ socket = Socket,
-                                   id_counter = NextId}) ->
+opened({publish, P0}, S0 = #state{ id_counter = NextId }) ->
     {P1, S1} =
         case P0#publish.qos of
             #qos{ level = L } ->
@@ -108,12 +133,25 @@ opened({publish, P0}, S0 = #state{ socket = Socket,
     write(S1, P1),
     {next_state, opened, S1};
 
-opened(disconnect, S0 = #state{ socket = Sock,
-                                frame_buf = Buf }) ->
+opened({subscribe, Subs, From}, S0 = #state{ rpcs = RPC0,
+                                             id_counter = Id }) ->
+    RPC1 = gb_trees:insert(Id, {sub, From}, RPC0),
+    S1 = S0#state{ id_counter = Id + 1,
+                   rpcs = RPC1 },
+    write(S1, Subs#subscribe{ message_id = Id }),
+    {next_state, opened, S1};
+
+opened({frame, F = #suback{}}, S0 = #state{ rpcs = RPC0 }) ->
+    #suback{ message_id = Id, qoses = QoS } = F,
+    {sub, From} = gb_trees:get(Id, RPC0),
+    RPC1 = gb_trees:delete(Id, RPC0),
+    From ! {suback, QoS},
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
+
+opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
-    {next_state, closed, S0#state{ socket = undefined,
-                                   frame_buf = <<>> }}.
+    {next_state, closed, S0#state{ socket = undefined }}.
 
 %% all states
 
@@ -124,8 +162,11 @@ handle_sync_event(Event, From, StateName, StateData) ->
     Reply = ok,
     {reply, Reply, StateName, StateData}.
 
-handle_info(Info, StateName, StateData) ->
-    {next_state, StateName, StateData}.
+%% Once we've set the socket to {active, once}, and we're not
+%% otherwise in a `receive ..`, data will arrive here.
+handle_info({tcp, _S, Data}, opened, S0) ->
+    S = process_data(Data, S0),
+    {next_state, opened, S}.
 
 terminate(Reason, StateName, StatData) ->
     ok.
@@ -141,30 +182,58 @@ write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
 
--spec(recv(#state{}) -> {ok, mqtt_frame(), #state{}}
+%% `recv` is used to synchronously get another frame from the
+%% socket. Once the connection is open, there's no need to do this,
+%% since it will effectively receive frames in a loop anyway.
+-spec(recv(#state{}) -> {ok, mqtt_frame(), binary(), #state{}}
                       | {error, term()}).
-recv(State = #state{ frame_buf = Buf }) ->
-    parse_frame(Buf, State, fun mqtt_framing:parse/1).
+recv(State) ->
+    parse_frame(<<>>, State, fun mqtt_framing:parse/1).
 
 parse_frame(<<>>, S, P) ->
-    ask_for_more(S, P);
-parse_frame(Buf, S0 = #state{ socket = Sock }, Parse) ->
+    wait_for_more(S, P);
+parse_frame(Buf, S0, Parse) ->
     case Parse(Buf) of
         {frame, F, Rest} ->
-            {ok, F, S0#state{ frame_buf = Rest }};
+            {ok, F, Rest, S0};
         {more, K} ->
-            ask_for_more(S0, K);
+            wait_for_more(S0, K);
         {error, R} ->
             frame_error(self(), R)
     end.
 
-ask_for_more(S = #state{ socket = Sock }, K) ->
+wait_for_more(S = #state{ socket = Sock }, K) ->
     inet:setopts(Sock, [{active, once}]),
     receive
         {tcp, Sock, D} -> parse_frame(D, S, K);
         {tcp_closed, Sock} -> unexpected_closed(self());
         {tcp_error, Sock, Reason} -> socket_error(self(), Reason)
     end.
+
+ask_for_more(S = #state{ socket = Sock }) ->
+    inet:setopts(Sock, [{active, once}]),
+    S.
+
+%% Whenever data comes in, parse out a frame and do something with
+%% it. Since we can (and often will) end up on a frame boundary, no
+%% remainder means get some more and start again.
+process_data(<<>>, S) ->
+    ask_for_more(S);
+process_data(Data, S = #state{ socket = Sock,
+                               parse_fun = Parse }) ->
+    case Parse(Data) of
+        {more, K} ->
+            inet:setopts(Sock, [{active, once}]),
+            S#state{ parse_fun = K };
+        {frame, F, Rest} ->
+            S1 = S#state{ parse_fun = fun mqtt_framing:parse/1 },
+            selfsend_frame(F),
+            process_data(Rest, S1)
+            %% ERROR CASES
+    end.
+
+selfsend_frame(Frame) ->
+    ok = gen_fsm:send_event(self(), {frame, Frame}).
 
 %% FIXME TODO ETC
 unexpected_closed(Conn) ->
@@ -248,7 +317,7 @@ publish_opt(P, exactly_once) ->
 -type(host() :: inet:ip_address() | inet:hostname()).
 
 -spec(make_address(address()) -> {host(), inet:port_number()}).
-make_address(Whole = {Host, Port}) ->
+make_address(Whole = {_Host, _Port}) ->
     Whole;
 make_address(Host) ->
     {Host, 1883}.
