@@ -7,6 +7,7 @@
          connect/3, connect/4,
          publish/3, publish/4,
          subscribe/2,
+         unsubscribe/2,
          disconnect/1]).
 
 %% gen_fsm callbacks
@@ -72,15 +73,20 @@ publish(Conn, Topic, Payload, Options) ->
 
 %% NB this also sends a reply `{suback, Qoses}` to the calling process
 %% when the server has responded.
--spec(subscribe(connection(), [{topic(), qos_level()}]) ->
-             ok).
+-spec(subscribe(connection(), [{topic(), qos_level()}]) -> ok).
 subscribe(Conn, Subs) ->
     Subscribe = #subscribe{
       dup = false,
       subscriptions = [#subscription{ topic = T, qos = Q }
                        || {T, Q} <- Subs] },
-    gen_fsm:send_event(Conn, {subscribe, Subscribe, self()}).
+    gen_fsm:send_event(Conn, {rpc, Subscribe, self()}).
 
+-spec(unsubscribe(connection(), [topic()]) -> ok).
+unsubscribe(Conn, Topics) ->
+    Unsub = #unsubscribe{ topics = Topics },
+    gen_fsm:send_event(Conn, {rpc, Unsub, self()}).
+
+-spec(disconnect(connection()) -> ok).
 disconnect(Conn) ->
     gen_fsm:send_event(Conn, disconnect).
 
@@ -133,25 +139,29 @@ opened({publish, P0}, S0 = #state{ id_counter = NextId }) ->
     write(S1, P1),
     {next_state, opened, S1};
 
-opened({subscribe, Subs, From}, S0 = #state{ rpcs = RPC0,
-                                             id_counter = Id }) ->
-    RPC1 = gb_trees:insert(Id, {sub, From}, RPC0),
-    S1 = S0#state{ id_counter = Id + 1,
-                   rpcs = RPC1 },
-    write(S1, Subs#subscribe{ message_id = Id }),
+opened({rpc, Frame, From}, S0) ->
+    S1 = rpc(S0, Frame, From),
     {next_state, opened, S1};
 
-opened({frame, F = #suback{}}, S0 = #state{ rpcs = RPC0 }) ->
-    #suback{ message_id = Id, qoses = QoS } = F,
-    {sub, From} = gb_trees:get(Id, RPC0),
-    RPC1 = gb_trees:delete(Id, RPC0),
-    From ! {suback, QoS},
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+opened({frame, Frame}, S0) ->
+    case is_reply(Frame) of
+        true  ->
+            #state{ rpcs = RPC0 } = S0,
+            {Id, Reply} = make_reply(Frame),
+            From = gb_trees:get(Id, RPC0),
+            RPC1 = gb_trees:delete(Id, RPC0),
+            From ! {Id, Reply},
+            {next_state, opened, S0#state{ rpcs = RPC1 }};
+        false ->
+            %%% unsolicited frames .. like #publish{}!
+            ok
+    end;
 
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
     {next_state, closed, S0#state{ socket = undefined }}.
+
 
 %% all states
 
@@ -181,6 +191,38 @@ code_change(OldVsn, StateName, StateData, Extra) ->
 write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
+
+%% Record the fact of an RPC and send the frame with the correct id.
+rpc(S0, Req, From) ->
+    #state{ id_counter = Id,
+            rpcs = RPC0 } = S0,
+    RPC1 = gb_trees:insert(Id, From, RPC0),
+    write(S0, with_id(Id, Req)),
+    S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
+
+with_id(Id, S = #subscribe{})   -> S#subscribe{ message_id = Id };
+with_id(Id, U = #unsubscribe{}) -> U#unsubscribe{ message_id = Id }.
+
+is_reply(#suback{})   -> true;
+is_reply(#unsuback{}) -> true;
+% is_reply(#puback{})   -> true;
+% is_reply(#pubrec{})   -> true;
+% is_reply(#pubrel{})   -> true;
+% is_reply(#pubcomp{})  -> true;
+is_reply(_)           -> false.
+
+make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
+    {Id, {suback, QoSes}};
+make_reply(#unsuback{ message_id = Id }) ->
+    {Id, unusback}.
+% make_reply(#puback{ message_id = Id }) ->
+%     {Id, puback};
+% make_reply(#pubrec{ message_id = Id }) ->
+%     {Id, pubrec};
+% make_reply(#pubrel{ message_id = Id }) ->
+%     {Id, pubrel};
+% make_reply(#pubcomp{ message_id = Id }) ->
+%     {Id, pubcomp}.
 
 %% `recv` is used to synchronously get another frame from the
 %% socket. Once the connection is open, there's no need to do this,
