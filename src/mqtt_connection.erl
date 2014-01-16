@@ -118,12 +118,14 @@ unopened({open, Socket, Connect}, From,
                          S2
                  end,
             {reply, ok, opened, S3};
-        {ok, #connack{ return_code = Else }, S1} ->
-            protocol_error(Else, S1);
-        {ok, Else, S1} ->
-            protocol_error({unexpected, Else}, S1);
+        {ok, #connack{ return_code = Else }, _Rest, S1} ->
+            E = {connection_refused, Else},
+            {stop, E, {error, E}, S1};
+        {ok, Else, _Rest, S1} ->
+            E = {unexpected, Else},
+            {stop, E, {error, unexpected_frame}, S1};
         {error, Reason} ->
-            frame_error(Reason, S)
+            {stop, Reason, {error, connection_error}, S0}
     end.
 
 opened({publish, P0}, S0 = #state{ id_counter = NextId }) ->
@@ -240,16 +242,16 @@ parse_frame(Buf, S0, Parse) ->
             {ok, F, Rest, S0};
         {more, K} ->
             wait_for_more(S0, K);
-        {error, R} ->
-            frame_error(self(), R)
+        Err = {error, _} ->
+            Err
     end.
 
 wait_for_more(S = #state{ socket = Sock }, K) ->
     inet:setopts(Sock, [{active, once}]),
     receive
         {tcp, Sock, D} -> parse_frame(D, S, K);
-        {tcp_closed, Sock} -> unexpected_closed(self());
-        {tcp_error, Sock, Reason} -> socket_error(self(), Reason)
+        {tcp_closed, Sock} -> {error, unexpected_socket_close};
+        {tcp_error, Sock, Reason} -> {error, {socket_error, Reason}}
     end.
 
 ask_for_more(S = #state{ socket = Sock }) ->
@@ -276,19 +278,6 @@ process_data(Data, S = #state{ socket = Sock,
 
 selfsend_frame(Frame) ->
     ok = gen_fsm:send_event(self(), {frame, Frame}).
-
-%% FIXME TODO ETC
-unexpected_closed(Conn) ->
-    {error, closed}.
-
-socket_error(Conn, Reason) ->
-    {error, Reason}.
-
-frame_error(Conn, Reason) ->
-    {error, Reason}.
-
-protocol_error(Reason, State) ->
-    {error, Reason, State}.
 
 %% Create a frame given the options (fields, effectively) as an alist
 opts(F, []) ->
