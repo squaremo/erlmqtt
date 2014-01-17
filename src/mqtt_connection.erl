@@ -25,7 +25,8 @@
           parse_fun = undefined,
           rpcs = gb_trees:empty(),
           id_counter = 1,
-          receiver = undefined
+          receiver = undefined,
+          receiver_monitor = undefined
          }).
 
 -type(connection() :: pid()).
@@ -104,7 +105,10 @@ init([]) ->
 
 unopened({open, Socket, Receiver, Connect}, From,
          S0 = #state{ socket = undefined }) ->
-    S = S0#state{ socket = Socket, receiver = Receiver },
+    Monitor = monitor(process, Receiver),
+    S = S0#state{ socket = Socket,
+                  receiver_monitor = Monitor,
+                  receiver = Receiver },
     write(S, Connect),
     case recv(S) of
         {ok, #connack{ return_code = ok }, Rest, S1} ->
@@ -183,7 +187,11 @@ handle_sync_event(Event, From, StateName, StateData) ->
 %% otherwise in a `receive ..`, data will arrive here.
 handle_info({tcp, _S, Data}, opened, S0) ->
     S = process_data(Data, S0),
-    {next_state, opened, S}.
+    {next_state, opened, S};
+handle_info({'DOWN', Ref, process, Pid, Reason}, opened,
+            S0 = #state{ receiver_monitor = Ref,
+                         receiver = Pid }) ->
+    {stop, {receiver_down, Reason}, S0}.
 
 terminate(Reason, StateName, StatData) ->
     ok.
