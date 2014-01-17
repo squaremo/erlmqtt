@@ -24,7 +24,8 @@
           socket = undefined,
           parse_fun = undefined,
           rpcs = gb_trees:empty(),
-          id_counter = 1
+          id_counter = 1,
+          receiver = undefined
          }).
 
 -type(connection() :: pid()).
@@ -39,23 +40,25 @@ connect(Conn, Address, ClientId) ->
 -spec(connect(connection(),
               address(),
               client_id(),
-              [connect_option()]) -> ok).
-connect(Conn, Address, ClientId, ConnectOpts) ->
+              [connect_option() | {'receiver', pid()}]) -> ok).
+connect(Conn, Address, ClientId, ConnectOpts0) ->
     Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
+    Receiver = proplists:get_value(receiver, ConnectOpts0, self()),
+    ConnectOpts = proplists:delete(receiver, ConnectOpts0),
     Connect1 = opts(Connect, ConnectOpts),
     {Host, Port} = make_address(Address),
     case gen_tcp:connect(Host, Port,
                          [{active, false},
                           binary]) of
         {ok, Sock} ->
-            open(Conn, Sock, Connect1);
+            open(Conn, Sock, Receiver, Connect1);
         E = {error, _} -> E
     end.
 
 %% NB this assumes that the calling process controls the socket
-open(Conn, Sock, ConnectFrame) ->
+open(Conn, Sock, Receiver, ConnectFrame) ->
     ok = gen_tcp:controlling_process(Sock, Conn),
-    gen_fsm:sync_send_event(Conn, {open, Sock, ConnectFrame}).
+    gen_fsm:sync_send_event(Conn, {open, Sock, Receiver, ConnectFrame}).
 
 
 -spec(publish(connection(), topic(), payload()) -> ok).
@@ -99,9 +102,9 @@ init([]) ->
 
 %% worth putting specs on these?
 
-unopened({open, Socket, Connect}, From,
+unopened({open, Socket, Receiver, Connect}, From,
          S0 = #state{ socket = undefined }) ->
-    S = S0#state{ socket = Socket },
+    S = S0#state{ socket = Socket, receiver = Receiver },
     write(S, Connect),
     case recv(S) of
         {ok, #connack{ return_code = ok }, Rest, S1} ->
@@ -155,8 +158,10 @@ opened({frame, Frame}, S0) ->
             From ! {Id, Reply},
             {next_state, opened, S0#state{ rpcs = RPC1 }};
         false ->
-            %%% unsolicited frames .. like #publish{}!
-            ok
+            %% TODO deal with QoS
+            #state{ receiver = Receiver } = S0,
+            Receiver ! {frame, Frame},
+            {next_state, opened, S0}
     end;
 
 opened(disconnect, S0 = #state{ socket = Sock }) ->
