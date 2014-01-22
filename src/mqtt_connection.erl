@@ -29,19 +29,21 @@
           receiver_monitor = undefined
          }).
 
+-type(error() :: {'error', term()}).
+
 -type(connection() :: pid()).
 
 start_link() ->
     gen_fsm:start_link(?MODULE, [], []).
 
--spec(connect(connection(), address(), client_id()) -> ok).
+-spec(connect(connection(), address(), client_id()) -> ok | error()).
 connect(Conn, Address, ClientId) ->
     connect(Conn, Address, ClientId, []).
 
 -spec(connect(connection(),
               address(),
               client_id(),
-              [connect_option() | {'receiver', pid()}]) -> ok).
+              [connect_option() | {'receiver', pid()}]) -> ok | error()).
 connect(Conn, Address, ClientId, ConnectOpts0) ->
     Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
     Receiver = proplists:get_value(receiver, ConnectOpts0, self()),
@@ -83,12 +85,12 @@ subscribe(Conn, Subs) ->
       dup = false,
       subscriptions = [#subscription{ topic = T, qos = Q }
                        || {T, Q} <- Subs] },
-    gen_fsm:send_event(Conn, {rpc, Subscribe, self()}).
+    rpc(Conn, Subscribe, self()).
 
 -spec(unsubscribe(connection(), [topic()]) -> ok).
 unsubscribe(Conn, Topics) ->
     Unsub = #unsubscribe{ topics = Topics },
-    gen_fsm:send_event(Conn, {rpc, Unsub, self()}).
+    rpc(Conn, Unsub, self()).
 
 -spec(disconnect(connection()) -> ok).
 disconnect(Conn) ->
@@ -103,7 +105,7 @@ init([]) ->
 
 %% worth putting specs on these?
 
-unopened({open, Socket, Receiver, Connect}, From,
+unopened({open, Socket, Receiver, Connect}, _From,
          S0 = #state{ socket = undefined }) ->
     Monitor = monitor(process, Receiver),
     S = S0#state{ socket = Socket,
@@ -148,8 +150,8 @@ opened({publish, P0}, S0 = #state{ id_counter = NextId }) ->
     write(S1, P1),
     {next_state, opened, S1};
 
-opened({rpc, Frame, From}, S0) ->
-    S1 = rpc(S0, Frame, From),
+opened({rpc, Frame, Ref, From}, S0) ->
+    S1 = do_rpc(S0, Frame, Ref, From),
     {next_state, opened, S1};
 
 opened({frame, Frame}, S0) ->
@@ -157,9 +159,9 @@ opened({frame, Frame}, S0) ->
         true  ->
             #state{ rpcs = RPC0 } = S0,
             {Id, Reply} = make_reply(Frame),
-            From = gb_trees:get(Id, RPC0),
+            {Ref, From} = gb_trees:get(Id, RPC0),
             RPC1 = gb_trees:delete(Id, RPC0),
-            From ! {Id, Reply},
+            From ! {Ref, Reply},
             {next_state, opened, S0#state{ rpcs = RPC1 }};
         false ->
             %% TODO deal with QoS
@@ -207,11 +209,17 @@ write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
 
+%% Send an RPC frame (one that expects a reply) and return a receipt
+rpc(Conn, Frame, From) ->
+    Ref = make_ref(),
+    gen_fsm:send_event(Conn, {rpc, Frame, Ref, From}),
+    {ok, Ref}.
+
 %% Record the fact of an RPC and send the frame with the correct id.
-rpc(S0, Req, From) ->
+do_rpc(S0, Req, Ref, From) ->
     #state{ id_counter = Id,
             rpcs = RPC0 } = S0,
-    RPC1 = gb_trees:insert(Id, From, RPC0),
+    RPC1 = gb_trees:insert(Id, {Ref, From}, RPC0),
     write(S0, with_id(Id, Req)),
     S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
 
