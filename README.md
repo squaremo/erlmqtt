@@ -1,7 +1,7 @@
 erlmqtt
 =======
 
-An Erlang client library for MQTT 3.1.
+An Erlang client library for MQTT 3.1 (but not for MQTT 3.1.1, yet).
 
 ### Building
 
@@ -17,6 +17,20 @@ An Erlang client library for MQTT 3.1.
 
     $ erl -pa ebin
 
+*Subscribing*
+
     1> {ok, C} = mqtt_connection:start_link().
-    2> mqtt_connection:connect(C, "localhost", "client1").
-    3> mqtt_connection:publish(C, "topic/a/b", <<"payload">>).
+    2> ok = mqtt_connection:connect(C, "localhost", "client1").
+    3> {ok, Ref} = mqtt_connection:subscribe(C, [{"topic/#", at_most_once}]).
+    4> receive {Ref, Reply} -> Reply after 1000 -> timeout end.
+
+*Publishing*
+
+    5> mqtt_connection:publish(C, "topic/a/b", <<"payload">>).
+
+*Receiving messages*
+
+    6> receive {frame, Msg} -> Msg after 5000 -> timeout end.
+
+This API is likely to change, especially with respect to receiving
+messages.
