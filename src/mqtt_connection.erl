@@ -79,7 +79,7 @@ publish(Conn, Topic, Payload, Options) ->
 
 %% NB this also sends a reply `{suback, Qoses}` to the calling process
 %% when the server has responded.
--spec(subscribe(connection(), [{topic(), qos_level()}]) -> ok).
+-spec(subscribe(connection(), [{topic(), qos_level()}]) -> {ok, reference()}).
 subscribe(Conn, Subs) ->
     Subscribe = #subscribe{
       dup = false,
@@ -87,7 +87,7 @@ subscribe(Conn, Subs) ->
                        || {T, Q} <- Subs] },
     rpc(Conn, Subscribe, self()).
 
--spec(unsubscribe(connection(), [topic()]) -> ok).
+-spec(unsubscribe(connection(), [topic()]) -> {ok, reference()}).
 unsubscribe(Conn, Topics) ->
     Unsub = #unsubscribe{ topics = Topics },
     rpc(Conn, Unsub, self()).

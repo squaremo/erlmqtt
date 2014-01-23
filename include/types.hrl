@@ -18,6 +18,9 @@
 
 -include("frames.hrl").
 
+%% Represents records that are ready to be serialised. In some cases,
+%% records may be constructed with fields left undefined; these must
+%% be further constrained here.
 -type(mqtt_frame() ::
         #connect{}
       | #connack{}
@@ -26,9 +29,9 @@
       | #pubrec{}
       | #pubrel{}
       | #pubcomp{}
-      | #subscribe{}
+      | #subscribe{ message_id :: message_id() }
       | #suback{}
-      | #unsubscribe{}
+      | #unsubscribe{ message_id :: message_id() }
       | #unsuback{}
       | 'pingreq'
       | 'pingresp'

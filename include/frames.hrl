@@ -49,7 +49,7 @@
 
 -record(subscribe, {
           dup = undefined :: boolean(),
-          message_id = undefined :: message_id(),
+          message_id = undefined :: 'undefined' | message_id(),
           subscriptions = undefined :: subscriptions() }).
 
 -record(suback, {
@@ -57,7 +57,7 @@
           qoses = undefined :: [qos_level()] }).
 
 -record(unsubscribe, {
-          message_id = undefined :: message_id(),
+          message_id = undefined :: 'undefined' | message_id(),
           topics = [] :: [topic()] }).
 
 -record(unsuback, {
