@@ -144,7 +144,7 @@ opened({publish, P0}, S0 = #state{ id_counter = NextId,
             #qos{ level = L } ->
                 Qos = #qos{ level = L,
                             message_id = NextId },
-                RPCS1 = gb_trees:insert(NextId, P0, RPCS),
+                RPCS1 = gb_trees:insert({client, NextId}, P0, RPCS),
                 {P0#publish{ qos = Qos },
                  S0#state{
                    rpcs = RPCS1,
@@ -161,37 +161,49 @@ opened({rpc, Frame, Ref, From}, S0) ->
 
 opened({frame, Frame = #publish{}}, S0) ->
     %% TODO deal with QoS
-    #state{ receiver = Receiver } = S0,
+    S1 = do_ack(S0, Frame),
+    #state{ receiver = Receiver } = S1,
     Receiver ! {frame, Frame},
-    {next_state, opened, S0};
+    {next_state, opened, S1};
 
-%% This is step one of "exactly once" delivery
+%% This is step two of "exactly once" delivery (step one is publish),
+%% the first of two acknowledgments.
 opened({frame, #pubrec{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #publish{} = gb_trees:get(Id, RPC),
+    #publish{} = gb_trees:get({client, Id}, RPC),
     Ack = #pubrel{ message_id = Id },
-    RPC1 = gb_trees:update(Id, Ack, RPC),
+    %% NB update
+    RPC1 = gb_trees:update({client, Id}, Ack, RPC),
     write(S0, Ack),
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
+
+%% This is step three of exactly once; we receive it if we send pubrec
+%% to acknowledge a publish
+opened({frame, #pubrel{ message_id = Id }}, S0) ->
+    #state{ rpcs = RPC } = S0,
+    #pubrec{} = gb_trees:get({server, Id}, RPC),
+    RPC1 = gb_trees:delete({server, Id}, RPC),
+    write(S0, #pubcomp{ message_id = Id }),
     {next_state, opened, S0#state{ rpcs = RPC1 }};
 
 %% These frames end a "guaranteed delivery" exchange.
 opened({frame, #puback{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #publish{} = gb_trees:get(Id, RPC),
-    RPC1 = gb_trees:delete(Id, RPC),
+    #publish{} = gb_trees:get({client, Id}, RPC),
+    RPC1 = gb_trees:delete({client, Id}, RPC),
     {next_state, opened, S0#state{ rpcs = RPC1 }};
 opened({frame, #pubcomp{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #pubrel{} = gb_trees:get(Id, RPC),
-    RPC1 = gb_trees:delete(Id, RPC),
+    #pubrel{} = gb_trees:get({client, Id}, RPC),
+    RPC1 = gb_trees:delete({client, Id}, RPC),
     {next_state, opened, S0#state{ rpcs = RPC1 }};
 
 %% Remaining: #suback, #unsuback
 opened({frame, Frame}, S0) ->
     #state{ rpcs = RPC0 } = S0,
     {Id, Reply} = make_reply(Frame),
-    {Ref, From} = gb_trees:get(Id, RPC0),
-    RPC1 = gb_trees:delete(Id, RPC0),
+    {Ref, From} = gb_trees:get({client, Id}, RPC0),
+    RPC1 = gb_trees:delete({client, Id}, RPC0),
     From ! {Ref, Reply},
     {next_state, opened, S0#state{ rpcs = RPC1 }};
 
@@ -244,7 +256,7 @@ rpc(Conn, Frame, From) ->
 do_rpc(S0, Req, Ref, From) ->
     #state{ id_counter = Id,
             rpcs = RPC0 } = S0,
-    RPC1 = gb_trees:insert(Id, {Ref, From}, RPC0),
+    RPC1 = gb_trees:insert({client, Id}, {Ref, From}, RPC0),
     write(S0, with_id(Id, Req)),
     S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
 
@@ -255,6 +267,24 @@ make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
     {Id, {suback, QoSes}};
 make_reply(#unsuback{ message_id = Id }) ->
     {Id, unusback}.
+
+do_ack(S, #publish{ qos = QoS }) ->
+    case QoS of
+        at_most_once ->
+            S;
+        #qos{ level = at_least_once,
+              message_id = Id } ->
+            Ack = #puback{ message_id = Id },
+            write(S, Ack),
+            S;
+        #qos{ level = exactly_once,
+              message_id = Id } ->
+            #state{ rpcs = RPC } = S,
+            Ack = #pubrec{ message_id = Id },
+            write(S, Ack),
+            RPC1 = gb_trees:insert({server, Id}, Ack, RPC),
+            S#state{ rpcs = RPC1 }
+    end.
 
 %% `recv` is used to synchronously get another frame from the
 %% socket. Once the connection is open, there's no need to do this,
