@@ -137,14 +137,19 @@ unopened({open, Socket, Receiver, Connect}, _From,
             {stop, Reason, {error, connection_error}, S0}
     end.
 
-opened({publish, P0}, S0 = #state{ id_counter = NextId }) ->
+opened({publish, P0}, S0 = #state{ id_counter = NextId,
+                                   rpcs = RPCS }) ->
     {P1, S1} =
         case P0#publish.qos of
             #qos{ level = L } ->
-                Qos = #qos{ level = L, message_id = NextId },
+                Qos = #qos{ level = L,
+                            message_id = NextId },
+                RPCS1 = gb_trees:insert(NextId, P0, RPCS),
                 {P0#publish{ qos = Qos },
-                 S0#state{ id_counter = NextId + 1 }};
-            at_least_once ->
+                 S0#state{
+                   rpcs = RPCS1,
+                   id_counter = NextId + 1 }};
+            at_most_once ->
                 {P0, S0}
         end,
     write(S1, P1),
@@ -154,21 +159,41 @@ opened({rpc, Frame, Ref, From}, S0) ->
     S1 = do_rpc(S0, Frame, Ref, From),
     {next_state, opened, S1};
 
+opened({frame, Frame = #publish{}}, S0) ->
+    %% TODO deal with QoS
+    #state{ receiver = Receiver } = S0,
+    Receiver ! {frame, Frame},
+    {next_state, opened, S0};
+
+%% This is step one of "exactly once" delivery
+opened({frame, #pubrec{ message_id = Id }}, S0) ->
+    #state{ rpcs = RPC } = S0,
+    #publish{} = gb_trees:get(Id, RPC),
+    Ack = #pubrel{ message_id = Id },
+    RPC1 = gb_trees:update(Id, Ack, RPC),
+    write(S0, Ack),
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
+
+%% These frames end a "guaranteed delivery" exchange.
+opened({frame, #puback{ message_id = Id }}, S0) ->
+    #state{ rpcs = RPC } = S0,
+    #publish{} = gb_trees:get(Id, RPC),
+    RPC1 = gb_trees:delete(Id, RPC),
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
+opened({frame, #pubcomp{ message_id = Id }}, S0) ->
+    #state{ rpcs = RPC } = S0,
+    #pubrel{} = gb_trees:get(Id, RPC),
+    RPC1 = gb_trees:delete(Id, RPC),
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
+
+%% Remaining: #suback, #unsuback
 opened({frame, Frame}, S0) ->
-    case is_reply(Frame) of
-        true  ->
-            #state{ rpcs = RPC0 } = S0,
-            {Id, Reply} = make_reply(Frame),
-            {Ref, From} = gb_trees:get(Id, RPC0),
-            RPC1 = gb_trees:delete(Id, RPC0),
-            From ! {Ref, Reply},
-            {next_state, opened, S0#state{ rpcs = RPC1 }};
-        false ->
-            %% TODO deal with QoS
-            #state{ receiver = Receiver } = S0,
-            Receiver ! {frame, Frame},
-            {next_state, opened, S0}
-    end;
+    #state{ rpcs = RPC0 } = S0,
+    {Id, Reply} = make_reply(Frame),
+    {Ref, From} = gb_trees:get(Id, RPC0),
+    RPC1 = gb_trees:delete(Id, RPC0),
+    From ! {Ref, Reply},
+    {next_state, opened, S0#state{ rpcs = RPC1 }};
 
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
@@ -226,26 +251,10 @@ do_rpc(S0, Req, Ref, From) ->
 with_id(Id, S = #subscribe{})   -> S#subscribe{ message_id = Id };
 with_id(Id, U = #unsubscribe{}) -> U#unsubscribe{ message_id = Id }.
 
-is_reply(#suback{})   -> true;
-is_reply(#unsuback{}) -> true;
-% is_reply(#puback{})   -> true;
-% is_reply(#pubrec{})   -> true;
-% is_reply(#pubrel{})   -> true;
-% is_reply(#pubcomp{})  -> true;
-is_reply(_)           -> false.
-
 make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
     {Id, {suback, QoSes}};
 make_reply(#unsuback{ message_id = Id }) ->
     {Id, unusback}.
-% make_reply(#puback{ message_id = Id }) ->
-%     {Id, puback};
-% make_reply(#pubrec{ message_id = Id }) ->
-%     {Id, pubrec};
-% make_reply(#pubrel{ message_id = Id }) ->
-%     {Id, pubrel};
-% make_reply(#pubcomp{ message_id = Id }) ->
-%     {Id, pubcomp}.
 
 %% `recv` is used to synchronously get another frame from the
 %% socket. Once the connection is open, there's no need to do this,
@@ -354,10 +363,10 @@ publish_opt(P, {retain, Flag}) when is_boolean(Flag) ->
     P#publish{ retain = Flag };
 publish_opt(P, {qos, Qos}) ->
     P#publish{ qos = Qos };
-publish_opt(P, at_least_once) ->
-    publish_opt(P, {qos, at_least_once});
 publish_opt(P, at_most_once) ->
-    publish_opt(P, {qos, #qos{ level = at_most_once}});
+    publish_opt(P, {qos, at_most_once});
+publish_opt(P, at_least_once) ->
+    publish_opt(P, {qos, #qos{ level = at_least_once}});
 publish_opt(P, exactly_once) ->
     publish_opt(P, {qos, #qos{ level = exactly_once}}).
 

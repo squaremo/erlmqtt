@@ -174,7 +174,7 @@ parse_message_type(?PUBLISH, Flags,
     QosLevel = qos_flag(Flags),
     {Qos, Payload} =
         case QosLevel of
-            at_least_once ->
+            at_most_once ->
                 {QosLevel, MessageIdAndPayload};
             _ ->
                 <<MsgId:16, P/binary>> = MessageIdAndPayload,
@@ -292,8 +292,8 @@ qos_flag(Flags) ->
 
 qos_flag(Flags, LSB) ->
     case (Flags bsr LSB) band 2#11 of
-        0 -> at_least_once;
-        1 -> at_most_once;
+        0 -> at_most_once;
+        1 -> at_least_once;
         2 -> exactly_once;
         3 -> throw({invalid_qos_value, 3})
     end.
@@ -330,7 +330,7 @@ check_message_id(Else) ->
 %% To enforce the frames for which the QoS is always 1
 check_qos_1(Flags) ->
     case qos_flag(Flags) of
-        at_most_once -> ok;
+        at_least_once -> ok;
         Else         -> throw({invalid_qos_value, Else})
     end.
 
@@ -385,7 +385,7 @@ serialise(#publish{ dup = Dup, qos = Qos, retain = Retain,
     Topic = norm_string(Topic0),
     TopicSize = size(Topic),
     case Qos of
-        at_least_once ->
+        at_most_once ->
             FixedByte = fixed_byte(?PUBLISH, Dup, 0, Retain),
             {Num, Bits} = encode_length(2 + TopicSize +
                                         iolist_size(Payload)),
@@ -495,8 +495,8 @@ string_bit(Str, Bit) when is_binary(Str) -> 1 bsl Bit.
 defined_bit(undefined, _) -> 0;
 defined_bit(_, Bit) -> 1 bsl Bit.
 
-qos_bits(at_least_once) -> 0;
-qos_bits(at_most_once)  -> 1;
+qos_bits(at_most_once)  -> 0;
+qos_bits(at_least_once) -> 1;
 qos_bits(exactly_once)  -> 2.
 
 %% We accept strings, binaries, and iolists for some fields, but the

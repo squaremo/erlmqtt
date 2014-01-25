@@ -65,5 +65,5 @@ parse_invalid_pubrel_qos_test() ->
 
 parse_qos0_publish_test() ->
     C = <<48,2,0,0>>,
-    {frame, #publish{ qos = at_least_once }, _} =
+    {frame, #publish{ qos = at_most_once }, _} =
         mqtt_framing:parse(C).

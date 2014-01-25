@@ -5,13 +5,13 @@
 
 -record(will, { topic = undefined :: topic(),
                 message = undefined :: payload(),
-                qos = 'at_least_once' :: qos_level(),
+                qos = 'at_most_once' :: qos_level(),
                 retain = false :: boolean() }).
 
 -record(subscription, { topic = undefined :: topic(),
-                        qos = 'at_least_once' :: qos_level() }).
+                        qos = 'at_most_once' :: qos_level() }).
 
--record(qos, { level = 'at_most_once' :: 'at_most_once'
+-record(qos, { level = 'at_least_once' :: 'at_least_once'
                                        | 'exactly_once',
                message_id = undefined :: message_id() }).
 
@@ -29,7 +29,7 @@
 
 -record(publish, { dup = false :: boolean(),
                    retain = false :: boolean(),
-                   qos = 'at_least_once' :: 'at_least_once'
+                   qos = 'at_most_once' :: 'at_most_once'
                                           | #qos{},
                    topic = undefined :: topic(),
                    payload = undefined :: payload() }).
@@ -41,14 +41,14 @@
           message_id = undefined :: message_id() }).
 
 -record(pubrel, {
-          dup = undefined :: boolean(),
+          dup = false :: boolean(),
           message_id = undefined :: message_id() }).
 
 -record(pubcomp, {
           message_id = undefined :: message_id() }).
 
 -record(subscribe, {
-          dup = undefined :: boolean(),
+          dup = false :: boolean(),
           message_id = undefined :: 'undefined' | message_id(),
           subscriptions = undefined :: subscriptions() }).
 
