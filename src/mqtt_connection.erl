@@ -70,16 +70,16 @@ publish(Conn, Topic, Payload) ->
 
 -spec(publish(connection(),
               topic(), payload(),
-              [publish_option()]) ->
-             ok).
+              [publish_option()]) -> ok).
 publish(Conn, Topic, Payload, Options) ->
     P0 = #publish{ topic = Topic, payload = Payload },
     P1 = opts(P0, Options),
     gen_fsm:send_event(Conn, {publish, P1}).
 
-%% NB this also sends a reply `{suback, Qoses}` to the calling process
+%% NB subscribe also sends a reply `{suback, Qoses}` to the calling process
 %% when the server has responded.
--spec(subscribe(connection(), [{topic(), qos_level()}]) -> {ok, reference()}).
+-spec(subscribe(connection(), [{topic(), qos_level()}]) ->
+             {ok, reference()}).
 subscribe(Conn, Subs) ->
     Subscribe = #subscribe{
       dup = false,
@@ -87,6 +87,8 @@ subscribe(Conn, Subs) ->
                        || {T, Q} <- Subs] },
     rpc(Conn, Subscribe, self()).
 
+%% NB unsubscribe also sends `unsuback` to the calling process once
+%% the server has responded.
 -spec(unsubscribe(connection(), [topic()]) -> {ok, reference()}).
 unsubscribe(Conn, Topics) ->
     Unsub = #unsubscribe{ topics = Topics },
@@ -137,81 +139,87 @@ unopened({open, Socket, Receiver, Connect}, _From,
             {stop, Reason, {error, connection_error}, S0}
     end.
 
+%% For the oft-repeated {next_state, opened, ...}
+-define(OPENED(S), {next_state, opened, S}).
+
+%% LOCAL makes a key from an Id created locally. REMOTE, from an Id
+%% provided by the server.
+-define(LOCAL(Id), {client, Id}).
+-define(REMOTE(Id), {server, Id}).
+
 opened({publish, P0}, S0 = #state{ id_counter = NextId,
-                                   rpcs = RPCS }) ->
-    {P1, S1} =
-        case P0#publish.qos of
-            #qos{ level = L } ->
-                Qos = #qos{ level = L,
-                            message_id = NextId },
-                RPCS1 = gb_trees:insert({client, NextId}, P0, RPCS),
-                {P0#publish{ qos = Qos },
-                 S0#state{
-                   rpcs = RPCS1,
-                   id_counter = NextId + 1 }};
-            at_most_once ->
-                {P0, S0}
-        end,
-    write(S1, P1),
-    {next_state, opened, S1};
+                                   rpcs = RPC }) ->
+    S1 = case P0#publish.qos of
+             #qos{ level = L } ->
+                 Qos = #qos{ level = L,
+                             message_id = NextId },
+                 RPC1 = gb_trees:insert(?LOCAL(NextId), P0, RPC),
+                 P1 = P0#publish{ qos = Qos },
+                 write(S0, P1),
+                 S0#state{ rpcs = RPC1,
+                           id_counter = NextId + 1 };
+             at_most_once ->
+                 write(S0, P0),
+                 S0
+         end,
+    ?OPENED(S1);
 
 opened({rpc, Frame, Ref, From}, S0) ->
     S1 = do_rpc(S0, Frame, Ref, From),
-    {next_state, opened, S1};
+    ?OPENED(S1);
 
 opened({frame, Frame = #publish{}}, S0) ->
-    %% TODO deal with QoS
     S1 = do_ack(S0, Frame),
     #state{ receiver = Receiver } = S1,
     Receiver ! {frame, Frame},
-    {next_state, opened, S1};
+    ?OPENED(S1);
 
 %% This is step two of "exactly once" delivery (step one is publish),
 %% the first of two acknowledgments.
 opened({frame, #pubrec{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #publish{} = gb_trees:get({client, Id}, RPC),
+    #publish{} = gb_trees:get(?LOCAL(Id), RPC),
     Ack = #pubrel{ message_id = Id },
     %% NB update
-    RPC1 = gb_trees:update({client, Id}, Ack, RPC),
+    RPC1 = gb_trees:update(?LOCAL(Id), Ack, RPC),
     write(S0, Ack),
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+    ?OPENED(S0#state{ rpcs = RPC1 });
 
 %% This is step three of exactly once; we receive it if we send pubrec
-%% to acknowledge a publish
+%% to acknowledge a publish with QoS = exactly_once
 opened({frame, #pubrel{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #pubrec{} = gb_trees:get({server, Id}, RPC),
-    RPC1 = gb_trees:delete({server, Id}, RPC),
+    #pubrec{} = gb_trees:get(?REMOTE(Id), RPC),
+    RPC1 = gb_trees:delete(?REMOTE(Id), RPC),
     write(S0, #pubcomp{ message_id = Id }),
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+    ?OPENED(S0#state{ rpcs = RPC1 });
 
-%% These frames end a "guaranteed delivery" exchange.
+%% These two ff frames end a "guaranteed delivery" exchange.
 opened({frame, #puback{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #publish{} = gb_trees:get({client, Id}, RPC),
-    RPC1 = gb_trees:delete({client, Id}, RPC),
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+    #publish{} = gb_trees:get(?LOCAL(Id), RPC),
+    RPC1 = gb_trees:delete(?LOCAL(Id), RPC),
+    ?OPENED(S0#state{ rpcs = RPC1 });
+
 opened({frame, #pubcomp{ message_id = Id }}, S0) ->
     #state{ rpcs = RPC } = S0,
-    #pubrel{} = gb_trees:get({client, Id}, RPC),
-    RPC1 = gb_trees:delete({client, Id}, RPC),
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+    #pubrel{} = gb_trees:get(?LOCAL(Id), RPC),
+    RPC1 = gb_trees:delete(?LOCAL(Id), RPC),
+    ?OPENED(S0#state{ rpcs = RPC1 });
 
-%% Remaining: #suback, #unsuback
+%% Unaccounted for: #suback, #unsuback
 opened({frame, Frame}, S0) ->
     #state{ rpcs = RPC0 } = S0,
     {Id, Reply} = make_reply(Frame),
-    {Ref, From} = gb_trees:get({client, Id}, RPC0),
-    RPC1 = gb_trees:delete({client, Id}, RPC0),
+    {Ref, From} = gb_trees:get(?LOCAL(Id), RPC0),
+    RPC1 = gb_trees:delete(?LOCAL(Id), RPC0),
     From ! {Ref, Reply},
-    {next_state, opened, S0#state{ rpcs = RPC1 }};
+    ?OPENED(S0#state{ rpcs = RPC1 });
 
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
     {next_state, closed, S0#state{ socket = undefined }}.
-
 
 %% all states
 
@@ -226,7 +234,7 @@ handle_sync_event(Event, From, StateName, StateData) ->
 %% otherwise in a `receive ..`, data will arrive here.
 handle_info({tcp, _S, Data}, opened, S0) ->
     S = process_data(Data, S0),
-    {next_state, opened, S};
+    ?OPENED(S);
 handle_info({'DOWN', Ref, process, Pid, Reason}, opened,
             S0 = #state{ receiver_monitor = Ref,
                          receiver = Pid }) ->
@@ -240,8 +248,7 @@ code_change(OldVsn, StateName, StateData, Extra) ->
 
 %%% Internal functions
 
--spec(write(#state{ socket :: inet:socket() }, mqtt_frame()) ->
-             ok).
+-spec(write(#state{ socket :: inet:socket() }, mqtt_frame()) -> ok).
 write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
@@ -255,8 +262,8 @@ rpc(Conn, Frame, From) ->
 %% Record the fact of an RPC and send the frame with the correct id.
 do_rpc(S0, Req, Ref, From) ->
     #state{ id_counter = Id,
-            rpcs = RPC0 } = S0,
-    RPC1 = gb_trees:insert({client, Id}, {Ref, From}, RPC0),
+            rpcs = RPC } = S0,
+    RPC1 = gb_trees:insert(?LOCAL(Id), {Ref, From}, RPC),
     write(S0, with_id(Id, Req)),
     S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
 
@@ -268,6 +275,7 @@ make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
 make_reply(#unsuback{ message_id = Id }) ->
     {Id, unusback}.
 
+%% Send and possibly record the fact of an acknowledgment
 do_ack(S, #publish{ qos = QoS }) ->
     case QoS of
         at_most_once ->
@@ -282,7 +290,7 @@ do_ack(S, #publish{ qos = QoS }) ->
             #state{ rpcs = RPC } = S,
             Ack = #pubrec{ message_id = Id },
             write(S, Ack),
-            RPC1 = gb_trees:insert({server, Id}, Ack, RPC),
+            RPC1 = gb_trees:insert(?REMOTE(Id), Ack, RPC),
             S#state{ rpcs = RPC1 }
     end.
 
