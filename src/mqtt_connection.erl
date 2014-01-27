@@ -3,8 +3,8 @@
 -behaviour(gen_fsm).
 
 %% Public API
--export([start_link/0,
-         connect/3, connect/4,
+-export([start_link/2, start_link/3, start_link/4,
+         connect/1,
          publish/3, publish/4,
          subscribe/2,
          unsubscribe/2,
@@ -21,6 +21,7 @@
 -include("include/types.hrl").
 
 -record(state, {
+          connect_args = undefined,
           socket = undefined,
           parse_fun = undefined,
           rpcs = gb_trees:empty(),
@@ -33,36 +34,26 @@
 
 -type(connection() :: pid()).
 
-start_link() ->
-    gen_fsm:start_link(?MODULE, [], []).
+-spec(start_link(address(), client_id()) ->
+             {ok, connection()} | error()).
+start_link(Address, ClientId) ->
+    start_link(Address, ClientId, []).
 
--spec(connect(connection(), address(), client_id()) -> ok | error()).
-connect(Conn, Address, ClientId) ->
-    connect(Conn, Address, ClientId, []).
+-spec(start_link(address(), client_id(), [connect_option()]) ->
+             {ok, connection()} | error()).
+start_link(Address, ClientId, ConnectOpts) ->
+    start_link(Address, ClientId, ConnectOpts, self()).
 
--spec(connect(connection(),
-              address(),
-              client_id(),
-              [connect_option() | {'receiver', pid()}]) -> ok | error()).
-connect(Conn, Address, ClientId, ConnectOpts0) ->
-    Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
-    Receiver = proplists:get_value(receiver, ConnectOpts0, self()),
-    ConnectOpts = proplists:delete(receiver, ConnectOpts0),
-    Connect1 = opts(Connect, ConnectOpts),
-    {Host, Port} = make_address(Address),
-    case gen_tcp:connect(Host, Port,
-                         [{active, false},
-                          binary]) of
-        {ok, Sock} ->
-            open(Conn, Sock, Receiver, Connect1);
-        E = {error, _} -> E
-    end.
+-spec(start_link(address(), client_id(), [connect_option()], pid()) ->
+             {ok, connection()} | error()).
+start_link(Address, ClientId, ConnectOpts, Receiver) ->
+    gen_fsm:start_link(?MODULE,
+                       [Address, ClientId, ConnectOpts, Receiver],
+                       []).
 
-%% NB this assumes that the calling process controls the socket
-open(Conn, Sock, Receiver, ConnectFrame) ->
-    ok = gen_tcp:controlling_process(Sock, Conn),
-    gen_fsm:sync_send_event(Conn, {open, Sock, Receiver, ConnectFrame}).
-
+-spec(connect(connection()) -> ok | error()).
+connect(Conn) ->
+    gen_fsm:sync_send_event(Conn, connect).
 
 -spec(publish(connection(), topic(), payload()) -> ok).
 publish(Conn, Topic, Payload) ->
@@ -100,19 +91,35 @@ disconnect(Conn) ->
 
 %%% gen_fsm callbacks
 
-init([]) ->
-    {ok, unopened, #state{}}.
+init([Address, ClientId, ConnectOpts, Receiver]) ->
+    Monitor = monitor(process, Receiver),
+    {ok, unopened, #state{
+           connect_args = [Address, ClientId, ConnectOpts],
+           receiver = Receiver,
+           receiver_monitor = Monitor
+          }}.
 
 %% states
 
 %% worth putting specs on these?
 
-unopened({open, Socket, Receiver, Connect}, _From,
-         S0 = #state{ socket = undefined }) ->
-    Monitor = monitor(process, Receiver),
-    S = S0#state{ socket = Socket,
-                  receiver_monitor = Monitor,
-                  receiver = Receiver },
+unopened(connect, _From, S0 = #state{ socket = undefined }) ->
+    #state{ connect_args = [Address, ClientId, ConnectOpts] } = S0,
+    Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
+    Connect1 = opts(Connect, ConnectOpts),
+    {Host, Port} = make_address(Address),
+    case gen_tcp:connect(Host, Port,
+                         [{active, false},
+                          binary]) of
+        {ok, Socket} ->
+            S = S0#state{ socket = Socket },
+            open(S, Connect1);
+        E = {error, _} ->
+            {stop, E, E, S0}
+    end.
+
+%% Helper for connect event
+open(S, Connect) ->
     write(S, Connect),
     case recv(S) of
         {ok, #connack{ return_code = ok }, Rest, S1} ->
@@ -125,7 +132,8 @@ unopened({open, Socket, Receiver, Connect}, _From,
                      <<>> ->
                          ask_for_more(S2);
                      More ->
-                         self ! {tcp, Socket, More},
+                         #state{ socket = Sock } = S2,
+                         self ! {tcp, Sock, More},
                          S2
                  end,
             {reply, ok, opened, S3};
@@ -136,7 +144,7 @@ unopened({open, Socket, Receiver, Connect}, _From,
             E = {unexpected, Else},
             {stop, E, {error, unexpected_frame}, S1};
         {error, Reason} ->
-            {stop, Reason, {error, connection_error}, S0}
+            {stop, Reason, {error, connection_error}, S}
     end.
 
 %% For the oft-repeated {next_state, opened, ...}
@@ -219,7 +227,7 @@ opened({frame, Frame}, S0) ->
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
-    {next_state, closed, S0#state{ socket = undefined }}.
+    {stop, disconnected, S0#state{ socket = undefined }}.
 
 %% all states
 
@@ -238,7 +246,10 @@ handle_info({tcp, _S, Data}, opened, S0) ->
 handle_info({'DOWN', Ref, process, Pid, Reason}, opened,
             S0 = #state{ receiver_monitor = Ref,
                          receiver = Pid }) ->
-    {stop, {receiver_down, Reason}, S0}.
+    {stop, {receiver_down, Reason}, S0};
+handle_info({tcp_closed, Sock}, opened,
+           S0 = #state{ socket = Sock }) ->
+    {next_state, unconnected, S0#state{ socket = undefined }}.
 
 terminate(Reason, StateName, StatData) ->
     ok.

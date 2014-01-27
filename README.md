@@ -19,8 +19,8 @@ An Erlang client library for MQTT 3.1 (but not for MQTT 3.1.1, yet).
 
 *Subscribing*
 
-    1> {ok, C} = mqtt_connection:start_link().
-    2> ok = mqtt_connection:connect(C, "localhost", "client1").
+    1> {ok, C} = mqtt_connection:start_link("localhost", "client1").
+    2> ok = mqtt_connection:connect(C).
     3> {ok, Ref} = mqtt_connection:subscribe(C, [{"topic/#", at_most_once}]).
     4> receive {Ref, Reply} -> Reply after 1000 -> timeout end.
 
