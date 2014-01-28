@@ -21,13 +21,18 @@
 -include("include/types.hrl").
 
 -record(state, {
-          connect_args = undefined,
-          socket = undefined,
-          parse_fun = undefined,
-          rpcs = gb_trees:empty(),
-          id_counter = 1,
-          receiver = undefined,
-          receiver_monitor = undefined
+          connect_args = undefined :: {
+                           address(),
+                           client_id(),
+                           [connect_option()]
+                          },
+          clean_session = true :: boolean(),
+          socket :: port(),
+          parse_fun :: mqtt_framing:parse(),
+          rpcs = gb_trees:empty() :: gb_tree(),
+          id_counter = 1 :: pos_integer(),
+          receiver :: pid(),
+          receiver_monitor :: reference()
          }).
 
 -type(error() :: {'error', term()}).
@@ -94,7 +99,7 @@ disconnect(Conn) ->
 init([Address, ClientId, ConnectOpts, Receiver]) ->
     Monitor = monitor(process, Receiver),
     {ok, unopened, #state{
-           connect_args = [Address, ClientId, ConnectOpts],
+           connect_args = {Address, ClientId, ConnectOpts},
            receiver = Receiver,
            receiver_monitor = Monitor
           }}.
@@ -104,7 +109,7 @@ init([Address, ClientId, ConnectOpts, Receiver]) ->
 %% worth putting specs on these?
 
 unopened(connect, _From, S0 = #state{ socket = undefined }) ->
-    #state{ connect_args = [Address, ClientId, ConnectOpts] } = S0,
+    #state{ connect_args = {Address, ClientId, ConnectOpts} } = S0,
     Connect = #connect{ client_id = iolist_to_binary([ClientId]) },
     Connect1 = opts(Connect, ConnectOpts),
     {Host, Port} = make_address(Address),
@@ -215,7 +220,7 @@ opened({frame, #pubcomp{ message_id = Id }}, S0) ->
     RPC1 = gb_trees:delete(?LOCAL(Id), RPC),
     ?OPENED(S0#state{ rpcs = RPC1 });
 
-%% Unaccounted for: #suback, #unsuback
+%% Unaccounted for thus far: #suback, #unsuback
 opened({frame, Frame}, S0) ->
     #state{ rpcs = RPC0 } = S0,
     {Id, Reply} = make_reply(Frame),

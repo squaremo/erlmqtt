@@ -6,6 +6,7 @@
 -endif.
 
 -export([parse/1, serialise/1]).
+-export_type([parse_result/0, parse/0]).
 
 -define(Top1, 128).
 -define(Lower7, 127).
