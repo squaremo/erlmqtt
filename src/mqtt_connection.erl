@@ -20,6 +20,12 @@
 
 -include("include/types.hrl").
 
+-define(RPCS(Tree), {rpcs, Tree}).
+-define(REPLAY(Tree), {replay, Tree}).
+
+-type(rpcs() :: ?RPCS(gb_tree())).
+-type(replay() :: ?REPLAY(gb_tree())).
+
 -record(state, {
           connect_args = undefined :: {
                            address(),
@@ -29,8 +35,8 @@
           clean_session = true :: boolean(),
           socket :: port(),
           parse_fun :: mqtt_framing:parse(),
-          rpcs = gb_trees:empty() :: gb_tree(),
-          replay = gb_trees:empty() :: gb_tree(),
+          rpcs = empty_rpcs() :: rpcs(),
+          replay = empty_replay() :: replay(),
           id_counter = 1 :: pos_integer(),
           receiver :: pid(),
           receiver_monitor :: reference()
@@ -157,17 +163,18 @@ open(S, Connect) ->
     end.
 
 resend_or_reset(S = #state{ clean_session = true }) ->
-    S#state{ rpcs = gb_trees:empty(),
-             replay = gb_trees:empty() };
+    S#state{ rpcs = empty_rpcs(),
+             replay = empty_replay() };
 resend_or_reset(S = #state{ replay = Replay }) ->
-    resend(S#state{ rpcs = gb_trees:empty() }, Replay).
+    resend(S#state{ rpcs = empty_rpcs() }, Replay).
 
+-spec(resend(#state{}, replay()) -> #state{}).
 resend(S, Replay) ->
-    case gb_trees:is_empty(Replay) of
+    case is_empty_replay(Replay) of
         true ->
             S#state{ replay = Replay };
         false ->
-            {_Id, Frame, Replay1} = gb_trees:take_smallest(Replay),
+            {Frame, Replay1} = next_replay(Replay),
             write(S, dup_of(Frame)),
             resend(S, Replay1)
     end.
@@ -175,18 +182,13 @@ resend(S, Replay) ->
 %% For the oft-repeated {next_state, opened, ...}
 -define(OPENED(S), {next_state, opened, S}).
 
-%% LOCAL makes a key from an Id created locally. REMOTE, from an Id
-%% provided by the server.
--define(LOCAL(Id), {client, Id}).
--define(REMOTE(Id), {server, Id}).
-
 opened({publish, P0}, S0 = #state{ id_counter = NextId,
                                    replay = Replay }) ->
     S1 = case P0#publish.qos of
              #qos{ level = L } ->
                  Qos = #qos{ level = L,
                              message_id = NextId },
-                 Replay1 = gb_trees:insert(?LOCAL(NextId), P0, Replay),
+                 Replay1 = record_for_replay(NextId, P0, Replay),
                  P1 = P0#publish{ qos = Qos },
                  write(S0, P1),
                  S0#state{ replay = Replay1,
@@ -211,10 +213,12 @@ opened({frame, Frame = #publish{}}, S0) ->
 %% the first of two acknowledgments.
 opened({frame, #pubrec{ message_id = Id }}, S0) ->
     #state{ replay = Replay } = S0,
-    #publish{} = gb_trees:get(?LOCAL(Id), Replay),
+    #publish{} = check_replay(Id, Replay),
     Ack = #pubrel{ message_id = Id },
-    %% NB update
-    Replay1 = gb_trees:update(?LOCAL(Id), Ack, Replay),
+    %% NB update: we've passed phase one (publish -> pubrec) of the
+    %% delivery, so the replay if any will be phase two (pubrel ->
+    %% pubcomp)
+    Replay1 = replace_replay(Id, Ack, Replay),
     write(S0, Ack),
     ?OPENED(S0#state{ replay = Replay1 });
 
@@ -227,22 +231,21 @@ opened({frame, #pubrel{ message_id = Id }}, S0) ->
 %% These two ff frames end a "guaranteed delivery" exchange.
 opened({frame, #puback{ message_id = Id }}, S0) ->
     #state{ replay = Replay } = S0,
-    #publish{} = gb_trees:get(?LOCAL(Id), Replay),
-    Replay1 = gb_trees:delete(?LOCAL(Id), Replay),
+    #publish{} = check_replay(Id, Replay),
+    Replay1 = remove_from_replay(Id, Replay),
     ?OPENED(S0#state{ replay = Replay1 });
 
 opened({frame, #pubcomp{ message_id = Id }}, S0) ->
     #state{ replay = Replay } = S0,
-    #pubrel{} = gb_trees:get(?LOCAL(Id), Replay),
-    Replay1 = gb_trees:delete(?LOCAL(Id), Replay),
+    #pubrel{} = check_replay(Id, Replay),
+    Replay1 = remove_from_replay(Id, Replay),
     ?OPENED(S0#state{ replay = Replay1 });
 
 %% Unaccounted for thus far: #suback, #unsuback
 opened({frame, Frame}, S0) ->
     #state{ rpcs = RPC } = S0,
     {Id, Reply} = make_reply(Frame),
-    {Ref, From} = gb_trees:get(Id, RPC),
-    RPC1 = gb_trees:delete(Id, RPC),
+    {{Ref, From}, RPC1} = take_rpc(Id, RPC),
     From ! {Ref, Reply},
     ?OPENED(S0#state{ rpcs = RPC1 });
 
@@ -286,6 +289,8 @@ write(#state{ socket = S }, Frame) ->
     ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
     ok.
 
+%% RPCs
+
 %% Send an RPC frame (one that expects a reply) and return a receipt
 rpc(Conn, Frame, From) ->
     Ref = make_ref(),
@@ -296,9 +301,55 @@ rpc(Conn, Frame, From) ->
 do_rpc(S0, Req, Ref, From) ->
     #state{ id_counter = Id,
             rpcs = RPC } = S0,
-    RPC1 = gb_trees:insert(Id, {Ref, From}, RPC),
+    RPC1 = record_rpc(Id, Ref, From, RPC),
     write(S0, with_id(Id, Req)),
     S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
+
+-spec(empty_rpcs() -> rpcs()).
+empty_rpcs() -> ?RPCS(gb_trees:empty()).
+
+-spec(record_rpc(message_id(), reference(), pid(), rpcs()) ->
+             rpcs()).
+record_rpc(Id, Ref, From, ?RPCS(RPC)) ->
+    ?RPCS(gb_trees:insert(Id, {Ref, From}, RPC)).
+
+-spec(take_rpc(message_id(), rpcs()) ->
+             {{reference(), pid()}, rpcs()}).
+take_rpc(Id, ?RPCS(RPC)) ->
+    Result = {_Ref, _From} = gb_trees:get(Id, RPC),
+    RPC1 = gb_trees:delete(Id, RPC),
+    {Result, ?RPCS(RPC1)}.
+
+-spec(empty_replay() -> replay()).
+empty_replay() ->
+    ?REPLAY(gb_trees:empty()).
+
+-spec(is_empty_replay(replay()) -> boolean()).
+is_empty_replay(?REPLAY(Replay)) -> gb_trees:is_empty(Replay).
+
+-spec(check_replay(message_id(), replay()) -> mqtt_frame()).
+check_replay(Id, ?REPLAY(Replay)) ->
+    gb_trees:get(Id, Replay).
+
+-spec(record_for_replay(message_id(), mqtt_frame(), replay()) ->
+             replay()).
+record_for_replay(Id, Frame, ?REPLAY(Replay)) ->
+    ?REPLAY(gb_trees:insert(Id, Frame, Replay)).
+
+-spec(remove_from_replay(message_id(), replay()) ->
+             replay()).
+remove_from_replay(Id, ?REPLAY(Replay)) ->
+    ?REPLAY(gb_trees:delete(Id, Replay)).
+
+-spec(replace_replay(message_id(), mqtt_frame(), replay()) ->
+             replay()).
+replace_replay(Id, Frame, ?REPLAY(Replay)) ->
+    ?REPLAY(gb_trees:update(Id, Frame, Replay)).
+
+-spec(next_replay(replay()) -> {mqtt_frame(), replay()}).
+next_replay(?REPLAY(Replay)) ->
+    {_Id, Frame, Replay1} = gb_trees:take_smallest(Replay),
+    {Frame, ?REPLAY(Replay1)}.
 
 with_id(Id, S = #subscribe{})   -> S#subscribe{ message_id = Id };
 with_id(Id, U = #unsubscribe{}) -> U#unsubscribe{ message_id = Id }.
@@ -384,6 +435,8 @@ process_data(Data, S = #state{ socket = Sock,
 
 selfsend_frame(Frame) ->
     ok = gen_fsm:send_event(self(), {frame, Frame}).
+
+%% API helpers
 
 %% Create a frame given the options (fields, effectively) as an alist
 opts(F, []) ->
