@@ -480,18 +480,12 @@ connect_opt(C, {clean_session, B}) ->
     C#connect{ clean_session = B }.
 
 -type(publish_option() ::
-        'dup'
-      | {'dup', boolean()}
-      | retain
+        retain
       | {retain, boolean()}
       | {qos, qos_level()}
       | qos_level()).
 
 -spec(publish_opt(#publish{}, publish_option()) -> #publish{}).
-publish_opt(P, dup) ->
-    P#publish{ dup = true };
-publish_opt(P, {dup, Flag}) when is_boolean(Flag) ->
-    P#publish{ dup = Flag };
 publish_opt(P, retain) ->
     P#publish{ retain = true };
 publish_opt(P, {retain, Flag}) when is_boolean(Flag) ->
