@@ -39,7 +39,9 @@
           replay = empty_replay() :: replay(),
           id_counter = 1 :: pos_integer(),
           receiver :: pid(),
-          receiver_monitor :: reference()
+          receiver_monitor :: reference(),
+          keep_alive = 0 :: 0..16#ffff,
+          timer_ref :: reference()
          }).
 
 -type(error() :: {'error', term()}).
@@ -106,11 +108,13 @@ disconnect(Conn) ->
 init([Address, ClientId, ConnectOpts, Receiver]) ->
     Monitor = monitor(process, Receiver),
     CleanSession = proplists:get_value(clean_session, ConnectOpts, true),
+    KeepAlive = proplists:get_value(keep_alive, ConnectOpts, 0),
     {ok, unopened, #state{
            connect_args = {Address, ClientId, ConnectOpts},
            clean_session = CleanSession,
            receiver = Receiver,
-           receiver_monitor = Monitor
+           receiver_monitor = Monitor,
+           keep_alive = KeepAlive
           }}.
 
 %% states
@@ -151,7 +155,8 @@ open(S, Connect) ->
                          S2
                  end,
             S4 = resend_or_reset(S3),
-            {reply, ok, opened, S4};
+            S5 = maybe_start_timer(S4),
+            {reply, ok, opened, S5};
         {ok, #connack{ return_code = Else }, _Rest, S1} ->
             E = {connection_refused, Else},
             {stop, E, {error, E}, S1};
@@ -179,8 +184,31 @@ resend(S, Replay) ->
             resend(S, Replay1)
     end.
 
+maybe_start_timer(S = #state{ keep_alive = 0 }) ->
+    S;
+maybe_start_timer(S = #state{socket = Sock, keep_alive = K }) ->
+    {ok, [{send_oct, Count}]} = inet:getstat(Sock, [send_oct]),
+    Ref = gen_fsm:start_timer(K * 1000, Count),
+    S#state{ timer_ref = Ref }.
+
+stop_timer(S = #state{ timer_ref = undefined }) ->
+    S;
+stop_timer(S = #state{ timer_ref = Ref }) ->
+    gen_fsm:cancel_timer(Ref),
+    S#state{ timer_ref = undefined }.
+
 %% For the oft-repeated {next_state, opened, ...}
 -define(OPENED(S), {next_state, opened, S}).
+
+opened({timeout, Ref, Count},
+       S0 = #state{timer_ref = Ref, socket = Sock }) ->
+    {ok, [{send_oct, Count1}]} = inet:getstat(Sock, [send_oct]),
+    case Count1 of
+        Count ->
+            ok = write(S0, pingreq);
+        _ -> ok
+    end,
+    ?OPENED(maybe_start_timer(S0));
 
 opened({publish, P0}, S0 = #state{ id_counter = NextId,
                                    replay = Replay }) ->
@@ -202,6 +230,8 @@ opened({publish, P0}, S0 = #state{ id_counter = NextId,
 opened({rpc, Frame, Ref, From}, S0) ->
     S1 = do_rpc(S0, Frame, Ref, From),
     ?OPENED(S1);
+
+opened({frame, pingresp}, S0) -> ?OPENED(S0);
 
 opened({frame, Frame = #publish{}}, S0) ->
     S1 = do_ack(S0, Frame),
@@ -252,7 +282,8 @@ opened({frame, Frame}, S0) ->
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
-    {stop, disconnected, S0#state{ socket = undefined }}.
+    S1 = stop_timer(S0),
+    {stop, disconnected, S1#state{ socket = undefined }}.
 
 %% all states
 
@@ -276,7 +307,7 @@ handle_info({tcp_closed, Sock}, opened,
            S0 = #state{ socket = Sock }) ->
     {next_state, unconnected, S0#state{ socket = undefined }}.
 
-terminate(Reason, StateName, StatData) ->
+terminate(Reason, StateName, StateData) ->
     ok.
 
 code_change(OldVsn, StateName, StateData, Extra) ->
@@ -456,7 +487,8 @@ opt(P = #publish{}, Opt) ->
     | {will, topic(), payload(), qos_level(), boolean()}
     | {will, topic(), payload()}
     | {clean_session, boolean()}
-    | clean_session).
+    | clean_session
+    | {keep_alive, 0..16#ffff }).
 
 -spec(connect_opt(#connect{}, connect_option()) -> #connect{}).
 connect_opt(C, {client_id, Id}) ->
@@ -477,7 +509,9 @@ connect_opt(C, {will, Topic, Payload}) ->
 connect_opt(C, clean_session) ->
     C#connect{ clean_session = true };
 connect_opt(C, {clean_session, B}) ->
-    C#connect{ clean_session = B }.
+    C#connect{ clean_session = B };
+connect_opt(C, {keep_alive, K}) ->
+    C#connect{ keep_alive = K }.
 
 -type(publish_option() ::
         retain
