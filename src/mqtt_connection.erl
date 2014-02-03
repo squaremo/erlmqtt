@@ -186,9 +186,12 @@ resend(S, Replay) ->
 
 maybe_start_timer(S = #state{ keep_alive = 0 }) ->
     S;
-maybe_start_timer(S = #state{socket = Sock, keep_alive = K }) ->
-    {ok, [{send_oct, Count}]} = inet:getstat(Sock, [send_oct]),
-    Ref = gen_fsm:start_timer(K * 1000, Count),
+maybe_start_timer(S = #state{ socket = Sock }) ->
+    Count = bytes_sent(Sock),
+    set_timer(S, none, Count).
+
+set_timer(S = #state{ keep_alive = K }, Missed, Count) ->
+    Ref = gen_fsm:start_timer(K * 500, {Missed, Count}),
     S#state{ timer_ref = Ref }.
 
 stop_timer(S = #state{ timer_ref = undefined }) ->
@@ -197,18 +200,27 @@ stop_timer(S = #state{ timer_ref = Ref }) ->
     gen_fsm:cancel_timer(Ref),
     S#state{ timer_ref = undefined }.
 
+bytes_sent(Socket) ->
+    {ok, [{send_oct, Count}]} = inet:getstat(Socket, [send_oct]),
+    Count.
+
 %% For the oft-repeated {next_state, opened, ...}
 -define(OPENED(S), {next_state, opened, S}).
 
-opened({timeout, Ref, Count},
+opened({timeout, Ref, MissedAndCount},
        S0 = #state{timer_ref = Ref, socket = Sock }) ->
-    {ok, [{send_oct, Count1}]} = inet:getstat(Sock, [send_oct]),
-    case Count1 of
-        Count ->
-            ok = write(S0, pingreq);
-        _ -> ok
-    end,
-    ?OPENED(maybe_start_timer(S0));
+    CountNow = bytes_sent(Sock),
+    S1 = case MissedAndCount of
+             {once, CountNow} ->
+                 ok = write(S0, pingreq),
+                 NewCount = bytes_sent(Sock),
+                 set_timer(S0, none, NewCount);
+             {none, CountNow} ->
+                 set_timer(S0, once, CountNow);
+             {_, _} ->
+                 set_timer(S0, none, CountNow)
+         end,
+    ?OPENED(S1);
 
 opened({publish, P0}, S0 = #state{ id_counter = NextId,
                                    replay = Replay }) ->
