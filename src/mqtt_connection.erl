@@ -291,11 +291,12 @@ opened({frame, Frame}, S0) ->
     From ! {Ref, Reply},
     ?OPENED(S0#state{ rpcs = RPC1 });
 
+%% Disconnect from the server and terminate.
 opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
     S1 = stop_timer(S0),
-    {stop, disconnected, S1#state{ socket = undefined }}.
+    {stop, normal, S1#state{ socket = undefined }}.
 
 %% all states
 
