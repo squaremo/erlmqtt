@@ -1,4 +1,4 @@
--module(mqtt_connection).
+-module(erlmqtt_connection).
 
 -behaviour(gen_fsm).
 
@@ -34,7 +34,7 @@
                           },
           clean_session = true :: boolean(),
           socket :: port(),
-          parse_fun :: mqtt_framing:parse(),
+          parse_fun :: erlmqtt_framing:parse(),
           rpcs = empty_rpcs() :: rpcs(),
           replay = empty_replay() :: replay(),
           id_counter = 1 :: pos_integer(),
@@ -145,7 +145,7 @@ open(S, Connect) ->
             %% Data} packets, and if we have a remainder (somehow)
             %% after the first frame, we need to process that before
             %% asking for more.
-            S2 = S1#state{ parse_fun = fun mqtt_framing:parse/1 },
+            S2 = S1#state{ parse_fun = fun erlmqtt_framing:parse/1 },
             S3 = case Rest of
                      <<>> ->
                          ask_for_more(S2);
@@ -330,7 +330,7 @@ code_change(OldVsn, StateName, StateData, Extra) ->
 
 -spec(write(#state{ socket :: inet:socket() }, mqtt_frame()) -> ok).
 write(#state{ socket = S }, Frame) ->
-    ok = gen_tcp:send(S, mqtt_framing:serialise(Frame)),
+    ok = gen_tcp:send(S, erlmqtt_framing:serialise(Frame)),
     ok.
 
 %% RPCs
@@ -408,7 +408,7 @@ dup_of(F = #pubrel{}) ->
 make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
     {Id, {suback, QoSes}};
 make_reply(#unsuback{ message_id = Id }) ->
-    {Id, unusback}.
+    {Id, unsuback}.
 
 %% Send an acknowledgment.
 do_ack(S, #publish{ qos = QoS }) ->
@@ -433,7 +433,7 @@ do_ack(S, #publish{ qos = QoS }) ->
 -spec(recv(#state{}) -> {ok, mqtt_frame(), binary(), #state{}}
                       | {error, term()}).
 recv(State) ->
-    parse_frame(<<>>, State, fun mqtt_framing:parse/1).
+    parse_frame(<<>>, State, fun erlmqtt_framing:parse/1).
 
 parse_frame(<<>>, S, P) ->
     wait_for_more(S, P);
@@ -471,7 +471,7 @@ process_data(Data, S = #state{ socket = Sock,
             inet:setopts(Sock, [{active, once}]),
             S#state{ parse_fun = K };
         {frame, F, Rest} ->
-            S1 = S#state{ parse_fun = fun mqtt_framing:parse/1 },
+            S1 = S#state{ parse_fun = fun erlmqtt_framing:parse/1 },
             selfsend_frame(F),
             process_data(Rest, S1)
             %% ERROR CASES
@@ -494,8 +494,7 @@ opt(P = #publish{}, Opt) ->
     publish_opt(P, Opt).
 
 -type(connect_option() ::
-      {client_id, client_id()}
-    | {username, binary() | iolist()}
+      {username, binary() | iolist()}
     | {password, binary() | iolist()}
     | {will, topic(), payload(), qos_level(), boolean()}
     | {will, topic(), payload()}

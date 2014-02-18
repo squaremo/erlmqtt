@@ -1,12 +1,16 @@
 {application, erlmqtt,
  [
   {description, "MQTT 3.1 library"},
-  {vsn, "1"},
+  {vsn, "0.1"},
   {registered, []},
   {applications, [
                   kernel,
-                  stdlib
+                  stdlib,
+                  crypto
                  ]},
-  {modules, [mqtt_framing]},
+  {modules, [erlmqtt,
+             erlmqtt_framing,
+             erlmqtt_connection
+            ]},
   {env, []}
  ]}.

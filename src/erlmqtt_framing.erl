@@ -1,4 +1,4 @@
--module(mqtt_framing).
+-module(erlmqtt_framing).
 
 -ifdef(TEST).
 -include_lib("proper/include/proper.hrl").
