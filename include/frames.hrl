@@ -50,7 +50,7 @@
 -record(subscribe, {
           dup = false :: boolean(),
           message_id = undefined :: 'undefined' | message_id(),
-          subscriptions = undefined :: subscriptions() }).
+          subscriptions = undefined :: [#subscription{}] }).
 
 -record(suback, {
           message_id = undefined :: message_id(),

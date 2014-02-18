@@ -53,6 +53,8 @@
     | ?PINGRESP
     | ?DISCONNECT).
 
+-type(error() :: {'error', term()}).
+
 -type(qos_level() :: 'at_least_once'
                    | 'at_most_once'
                    | 'exactly_once').
@@ -73,7 +75,5 @@
 -type(client_id() :: <<_:8, _:_*8>>).
 
 -type(message_id() :: 1..16#ffff).
-
--type(subscriptions() :: [#subscription{}]).
 
 -endif.

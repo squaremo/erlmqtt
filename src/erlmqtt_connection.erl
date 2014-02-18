@@ -18,6 +18,14 @@
 %% states
 -export([unopened/3, opened/2]).
 
+%% types useful elsewhere
+-export_type([
+              address/0,
+              connect_option/0,
+              publish_option/0,
+              connection/0
+             ]).
+
 -include("include/types.hrl").
 
 -define(RPCS(Tree), {rpcs, Tree}).
@@ -30,7 +38,7 @@
           connect_args = undefined :: {
                            address(),
                            client_id(),
-                           [connect_option()]
+                           [connect_packet_option()]
                           },
           clean_session = true :: boolean(),
           socket :: port(),
@@ -44,8 +52,6 @@
           timer_ref :: reference()
          }).
 
--type(error() :: {'error', term()}).
-
 -type(connection() :: pid()).
 
 -spec(start_link(address(), client_id()) ->
@@ -53,12 +59,14 @@
 start_link(Address, ClientId) ->
     start_link(Address, ClientId, []).
 
--spec(start_link(address(), client_id(), [connect_option()]) ->
+-spec(start_link(address(), client_id(),
+                 [connect_packet_option()]) ->
              {ok, connection()} | error()).
 start_link(Address, ClientId, ConnectOpts) ->
     start_link(Address, ClientId, ConnectOpts, self()).
 
--spec(start_link(address(), client_id(), [connect_option()], pid()) ->
+-spec(start_link(address(), client_id(),
+                 [connect_packet_option()], pid()) ->
              {ok, connection()} | error()).
 start_link(Address, ClientId, ConnectOpts, Receiver) ->
     gen_fsm:start_link(?MODULE,
@@ -493,16 +501,23 @@ opt(C = #connect{}, Opt) ->
 opt(P = #publish{}, Opt) ->
     publish_opt(P, Opt).
 
+%% I make clean_session apart from the other options, because it is
+%% implied in the public API by the procedure used, rather than given
+%% as an option.
+-type(connect_packet_option() ::
+      connect_option()
+    | {clean_session, boolean()}
+    | clean_session).
+
 -type(connect_option() ::
       {username, binary() | iolist()}
     | {password, binary() | iolist()}
     | {will, topic(), payload(), qos_level(), boolean()}
     | {will, topic(), payload()}
-    | {clean_session, boolean()}
-    | clean_session
     | {keep_alive, 0..16#ffff }).
 
--spec(connect_opt(#connect{}, connect_option()) -> #connect{}).
+-spec(connect_opt(#connect{}, connect_packet_option()) ->
+             #connect{}).
 connect_opt(C, {client_id, Id}) ->
     C#connect{ client_id = iolist_to_binary([Id]) };
 connect_opt(C, {username, User}) ->
