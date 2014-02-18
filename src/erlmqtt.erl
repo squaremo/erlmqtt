@@ -6,8 +6,12 @@
          subscribe/2, subscribe/3,
          unsubscribe/2, unsubscribe/3,
          disconnect/1,
-         publish/3, publish/4
+         publish/3, publish/4,
+         recv_message/0, recv_message/1
         ]).
+
+-include("include/types.hrl").
+-include("include/frames.hrl").
 
 %% Public API for erlmqtt.
 
@@ -100,6 +104,23 @@ publish(Conn, Topic, Payload, QoS) when is_atom(QoS) ->
 %% quality of service.
 publish(Conn, Topic, Payload, Options) ->
     erlmqtt_connection:publish(Conn, Topic, Payload, Options).
+
+%% Wait for a message sent to the calling process, which is assumed to
+%% have been registered as the consumer for a connection. Return
+%% the topic and payload of the message as {Topic, Payload}.
+recv_message() ->
+    receive {frame, #publish{topic = T, payload = P}} ->
+            {T, P}
+    end.
+
+%% Wait for a message and return {Topic, Payload}, or time out after
+%% Timeout, in which case return 'timeout'.
+recv_message(Timeout) ->
+    receive {frame, #publish{topic = T, payload = P}} ->
+            {T, P}
+    after Timeout ->
+            timeout
+    end.
 
 %% ---- helpers
 
