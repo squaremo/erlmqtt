@@ -30,9 +30,13 @@
 
 -define(RPCS(Tree), {rpcs, Tree}).
 -define(REPLAY(Tree), {replay, Tree}).
+-define(DEDUP(Tree), {dedup, Tree}).
 
 -type(rpcs() :: ?RPCS(gb_tree())).
 -type(replay() :: ?REPLAY(gb_tree())).
+
+-define(SETS, sets).
+-type(dedup() :: ?DEDUP(set())).
 
 -record(state, {
           connect_args = undefined :: {
@@ -45,6 +49,7 @@
           parse_fun :: erlmqtt_framing:parse(),
           rpcs = empty_rpcs() :: rpcs(),
           replay = empty_replay() :: replay(),
+          dedup = empty_dedup() :: dedup(),
           id_counter = 1 :: pos_integer(),
           receiver :: pid(),
           receiver_monitor :: reference(),
@@ -253,11 +258,35 @@ opened({rpc, Frame, Ref, From}, S0) ->
 
 opened({frame, pingresp}, S0) -> ?OPENED(S0);
 
+%% Receiving publish: messages sent exactly_once must be
+%% deduplicated. I do this by keeping a set of message IDs that have
+%% already been seen, and removing when the #pubrel{} is sent.  Note
+%% that we only have to check for a duplicate if the message is marked
+%% as a duplicate and it's exactly_once -- there's no duty to check
+%% for duplicates of other messages (although it's possible to do so
+%% with a rolling window, say).
+
 opened({frame, Frame = #publish{}}, S0) ->
-    S1 = do_ack(S0, Frame),
-    #state{ receiver = Receiver } = S1,
-    Receiver ! {frame, Frame},
-    ?OPENED(S1);
+    #state{ dedup = Dedup, receiver = Receiver } = S0,
+    case Frame of
+        #publish{ dup = Dup,
+                  qos = #qos{
+                    message_id = Id,
+                    level = exactly_once }} ->
+            case Dup andalso is_duplicate(Id, Dedup) of
+                true ->
+                    ?OPENED(S0);
+                false ->
+                    S1 = do_ack(S0, Frame),
+                    Dedup1 = record_for_dedup(Id, Dedup),
+                    Receiver ! {frame, Frame},
+                    ?OPENED(S1#state{ dedup = Dedup1 })
+            end;
+        _ ->
+            S1 = do_ack(S0, Frame),
+            Receiver ! {frame, Frame},
+            ?OPENED(S1)
+    end;
 
 %% This is step two of "exactly once" delivery (step one is publish),
 %% the first of two acknowledgments.
@@ -273,10 +302,17 @@ opened({frame, #pubrec{ message_id = Id }}, S0) ->
     ?OPENED(S0#state{ replay = Replay1 });
 
 %% This is step three of exactly once; we receive it if we send pubrec
-%% to acknowledge a publish with QoS = exactly_once
+%% to acknowledge a publish with QoS = exactly_once. Once we've seen
+%% this frame, we no longer have to remember the message for
+%% deduplication.
+%%
+%% These frames might get resent, but the pubcomp must be sent in any
+%% case (since that will stop the sender sending pubrel).
 opened({frame, #pubrel{ message_id = Id }}, S0) ->
+    #state{ dedup = Dedup } = S0,
+    Dedup1 = remove_from_dedup(Id, Dedup),
     write(S0, #pubcomp{ message_id = Id }),
-    ?OPENED(S0);
+    ?OPENED(S0#state{ dedup = Dedup1 });
 
 %% These two ff frames end a "guaranteed delivery" exchange.
 opened({frame, #puback{ message_id = Id }}, S0) ->
@@ -402,6 +438,21 @@ replace_replay(Id, Frame, ?REPLAY(Replay)) ->
 next_replay(?REPLAY(Replay)) ->
     {_Id, Frame, Replay1} = gb_trees:take_smallest(Replay),
     {Frame, ?REPLAY(Replay1)}.
+
+-spec(empty_dedup() -> dedup()).
+empty_dedup() -> ?DEDUP(?SETS:new()).
+
+-spec(is_duplicate(message_id(), dedup()) -> boolean()).
+is_duplicate(Id, ?DEDUP(Set)) ->
+    ?SETS:is_element(Id, Set).
+
+-spec(record_for_dedup(message_id(), dedup()) -> dedup()).
+record_for_dedup(Id, ?DEDUP(Set)) ->
+    ?DEDUP(?SETS:add_element(Id, Set)).
+
+-spec(remove_from_dedup(message_id(), dedup()) -> dedup()).
+remove_from_dedup(Id, ?DEDUP(Set)) ->
+    ?DEDUP(?SETS:del_element(Id, Set)).
 
 with_id(Id, S = #subscribe{})   -> S#subscribe{ message_id = Id };
 with_id(Id, U = #unsubscribe{}) -> U#unsubscribe{ message_id = Id }.
