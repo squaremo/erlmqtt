@@ -7,6 +7,7 @@
          unsubscribe/2, unsubscribe/3,
          disconnect/1,
          publish/3, publish/4,
+         publish_sync/4, publish_sync/5,
          recv_message/0, recv_message/1
         ]).
 
@@ -127,6 +128,40 @@ publish(Conn, Topic, Payload, QoS) when is_atom(QoS) ->
 %% quality of service.
 publish(Conn, Topic, Payload, Options) ->
     erlmqtt_connection:publish(Conn, Topic, Payload, Options).
+
+%% Publish a message and wait for the acknowledgment to come back.
+-spec(publish_sync(connection(), topic(), payload(),
+                   qos_level()) -> ok).
+publish_sync(Conn, Topic, Payload, at_most_once) ->
+    publish(Conn, Topic, Payload);
+publish_sync(Conn, Topic, Payload, QoS) ->
+    Ref = publish_ref(Conn, Topic, Payload, QoS),
+    Ack = ack_for(QoS),
+    receive {Ack, Ref} ->
+            ok
+    end.
+
+-spec(publish_sync(connection(), topic(), payload(),
+                   qos_level(), timeout()) ->
+             ok | timeout).
+publish_sync(Conn, Topic, Payload, at_most_once, _) ->
+    publish(Conn, Topic, Payload);
+publish_sync(Conn, Topic, Payload, QoS, TO) ->
+    Ref = publish_ref(Conn, Topic, Payload, QoS),
+    Ack = ack_for(QoS),
+    receive {Ack, Ref} ->
+            ok
+    after TO ->
+            timeout
+    end.
+
+publish_ref(Conn, Topic, Payload, QoS) ->
+    Ref = make_ref(),
+    publish(Conn, Topic, Payload, [QoS, {ref, Ref}]),
+    Ref.
+
+ack_for(at_least_once) -> puback; 
+ack_for(exactly_once)  -> pubrec.
 
 %% Wait for a message sent to the calling process, which is assumed to
 %% have been registered as the consumer for a connection. Return

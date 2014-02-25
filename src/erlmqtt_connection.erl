@@ -38,6 +38,8 @@
 -define(SETS, sets).
 -type(dedup() :: ?DEDUP(set())).
 
+-type(msg_ref() :: term()).
+
 -record(state, {
           connect_args = undefined :: {
                            address(),
@@ -91,8 +93,10 @@ publish(Conn, Topic, Payload) ->
               [publish_option()]) -> ok).
 publish(Conn, Topic, Payload, Options) ->
     P0 = #publish{ topic = Topic, payload = Payload },
-    P1 = opts(P0, Options),
-    gen_fsm:send_event(Conn, {publish, P1}).
+    Ref = proplists:get_value(ref, Options, none),
+    Options1 = proplists:delete(ref, Options),
+    P1 = opts(P0, Options1),
+    gen_fsm:send_event(Conn, {publish, P1, Ref}).
 
 %% NB subscribe also sends a reply `{suback, Qoses}` to the calling process
 %% when the server has responded.
@@ -235,13 +239,13 @@ opened({timeout, Ref, MissedAndCount},
          end,
     ?OPENED(S1);
 
-opened({publish, P0}, S0 = #state{ id_counter = NextId,
+opened({publish, P0, Ref}, S0 = #state{ id_counter = NextId,
                                    replay = Replay }) ->
     S1 = case P0#publish.qos of
              #qos{ level = L } ->
                  Qos = #qos{ level = L,
                              message_id = NextId },
-                 Replay1 = record_for_replay(NextId, P0, Replay),
+                 Replay1 = record_for_replay(NextId, {P0, Ref}, Replay),
                  P1 = P0#publish{ qos = Qos },
                  write(S0, P1),
                  S0#state{ replay = Replay1,
@@ -291,13 +295,14 @@ opened({frame, Frame = #publish{}}, S0) ->
 %% This is step two of "exactly once" delivery (step one is publish),
 %% the first of two acknowledgments.
 opened({frame, #pubrec{ message_id = Id }}, S0) ->
-    #state{ replay = Replay } = S0,
-    #publish{} = check_replay(Id, Replay),
+    #state{ replay = Replay, receiver = Recv } = S0,
+    {#publish{}, Ref} = check_replay(Id, Replay),
     Ack = #pubrel{ message_id = Id },
+    maybe_notify_ack(pubrec, Ref, Recv),
     %% NB update: we've passed phase one (publish -> pubrec) of the
     %% delivery, so the replay if any will be phase two (pubrel ->
     %% pubcomp)
-    Replay1 = replace_replay(Id, Ack, Replay),
+    Replay1 = replace_replay(Id, {Ack, Ref}, Replay),
     write(S0, Ack),
     ?OPENED(S0#state{ replay = Replay1 });
 
@@ -316,14 +321,16 @@ opened({frame, #pubrel{ message_id = Id }}, S0) ->
 
 %% These two ff frames end a "guaranteed delivery" exchange.
 opened({frame, #puback{ message_id = Id }}, S0) ->
-    #state{ replay = Replay } = S0,
-    #publish{} = check_replay(Id, Replay),
+    #state{ replay = Replay, receiver = Recv } = S0,
+    {#publish{}, Ref} = check_replay(Id, Replay),
+    maybe_notify_ack(puback, Ref, Recv),
     Replay1 = remove_from_replay(Id, Replay),
     ?OPENED(S0#state{ replay = Replay1 });
 
 opened({frame, #pubcomp{ message_id = Id }}, S0) ->
-    #state{ replay = Replay } = S0,
-    #pubrel{} = check_replay(Id, Replay),
+    #state{ replay = Replay, receiver = Recv } = S0,
+    {#pubrel{}, Ref} = check_replay(Id, Replay),
+    maybe_notify_ack(pubcomp, Ref, Recv),
     Replay1 = remove_from_replay(Id, Replay),
     ?OPENED(S0#state{ replay = Replay1 });
 
@@ -415,11 +422,13 @@ empty_replay() ->
 -spec(is_empty_replay(replay()) -> boolean()).
 is_empty_replay(?REPLAY(Replay)) -> gb_trees:is_empty(Replay).
 
--spec(check_replay(message_id(), replay()) -> mqtt_frame()).
+-spec(check_replay(message_id(), replay()) -> {mqtt_frame(), msg_ref()}).
 check_replay(Id, ?REPLAY(Replay)) ->
     gb_trees:get(Id, Replay).
 
--spec(record_for_replay(message_id(), mqtt_frame(), replay()) ->
+-spec(record_for_replay(message_id(),
+                        {mqtt_frame(), msg_ref()},
+                        replay()) ->
              replay()).
 record_for_replay(Id, Frame, ?REPLAY(Replay)) ->
     ?REPLAY(gb_trees:insert(Id, Frame, Replay)).
@@ -429,14 +438,16 @@ record_for_replay(Id, Frame, ?REPLAY(Replay)) ->
 remove_from_replay(Id, ?REPLAY(Replay)) ->
     ?REPLAY(gb_trees:delete(Id, Replay)).
 
--spec(replace_replay(message_id(), mqtt_frame(), replay()) ->
+-spec(replace_replay(message_id(),
+                     {mqtt_frame(), msg_ref()},
+                     replay()) ->
              replay()).
 replace_replay(Id, Frame, ?REPLAY(Replay)) ->
     ?REPLAY(gb_trees:update(Id, Frame, Replay)).
 
 -spec(next_replay(replay()) -> {mqtt_frame(), replay()}).
 next_replay(?REPLAY(Replay)) ->
-    {_Id, Frame, Replay1} = gb_trees:take_smallest(Replay),
+    {_Id, {Frame, _Ref}, Replay1} = gb_trees:take_smallest(Replay),
     {Frame, ?REPLAY(Replay1)}.
 
 -spec(empty_dedup() -> dedup()).
@@ -485,6 +496,13 @@ do_ack(S, #publish{ qos = QoS }) ->
             write(S, Ack),
             S
     end.
+
+%% Tell the receiver about an acknowledgment, if the publish was given
+%% a reference.
+maybe_notify_ack(_Kind, none, _Recv) ->
+    ok;
+maybe_notify_ack(Kind, Ref, Recv) ->
+    Recv ! {Kind, Ref}.
 
 %% `recv` is used to synchronously get another frame from the
 %% socket. Once the connection is open, there's no need to do this,
@@ -592,12 +610,15 @@ connect_opt(C, {keep_alive, K}) ->
     C#connect{ keep_alive = K }.
 
 -type(publish_option() ::
-        retain
+        {ref, msg_ref()}
+      | retain
       | {retain, boolean()}
       | {qos, qos_level()}
       | qos_level()).
 
 -spec(publish_opt(#publish{}, publish_option()) -> #publish{}).
+publish_opt(P, {ref, _}) ->
+    P;
 publish_opt(P, retain) ->
     P#publish{ retain = true };
 publish_opt(P, {retain, Flag}) when is_boolean(Flag) ->
