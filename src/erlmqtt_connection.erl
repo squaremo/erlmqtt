@@ -194,7 +194,7 @@ resend_or_reset(S = #state{ replay = Replay }) ->
 resend(S, Replay) ->
     case is_empty_replay(Replay) of
         true ->
-            S#state{ replay = Replay };
+            S;
         false ->
             {Frame, Replay1} = next_replay(Replay),
             write(S, dup_of(Frame)),
