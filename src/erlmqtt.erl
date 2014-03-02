@@ -119,9 +119,9 @@ disconnect(Conn) ->
 publish(Conn, Topic, Payload) ->
     publish(Conn, Topic, Payload, []).
 
-%% publish a message with the given quality of service.
 -spec(publish(connection(), topic(), payload(),
               qos_level() | [publish_option()]) -> ok).
+%% publish a message with the given quality of service.
 publish(Conn, Topic, Payload, QoS) when is_atom(QoS) ->
     erlmqtt_connection:publish(Conn, Topic, Payload, [QoS]);
 %% publish a message with the options given, possibly including
@@ -129,39 +129,38 @@ publish(Conn, Topic, Payload, QoS) when is_atom(QoS) ->
 publish(Conn, Topic, Payload, Options) ->
     erlmqtt_connection:publish(Conn, Topic, Payload, Options).
 
+%% Publish a message and wait for the acknowledgment to come back, or
+%% a timeout. The QoS level may be given in the `Options`, or as the
+%% `Options`.
+-spec(publish_sync(connection(), topic(), payload(),
+                   qos_level() | [publish_option()],
+                   timeout()) ->
+             ok).
+publish_sync(Conn, Topic, Payload, QoS, Timeout)
+  when is_atom(QoS) ->
+    publish_sync(Conn, Topic, Payload, [QoS], Timeout);
+publish_sync(Conn, Topic, Payload, Options, Timeout) ->
+    case qos_option(Options) of
+        at_most_once ->
+            publish(Conn, Topic, Payload, Options);
+        QoS ->
+            Ref = publish_ref(Conn, Topic, Payload, Options),
+            Ack = ack_for(QoS),
+            receive {Ack, Ref} ->
+                    ok
+            after Timeout ->
+                    timeout
+            end
+    end.
+
+
 %% Publish a message and wait for the acknowledgment to come back.
 -spec(publish_sync(connection(), topic(), payload(),
-                   qos_level()) -> ok).
-publish_sync(Conn, Topic, Payload, at_most_once) ->
-    publish(Conn, Topic, Payload);
-publish_sync(Conn, Topic, Payload, QoS) ->
-    Ref = publish_ref(Conn, Topic, Payload, QoS),
-    Ack = ack_for(QoS),
-    receive {Ack, Ref} ->
-            ok
-    end.
+                   qos_level() | [publish_option()]) ->
+             ok).
+publish_sync(Conn, Topic, Payload, Options) ->
+    publish_sync(Conn, Topic, Payload, Options, infinity).
 
--spec(publish_sync(connection(), topic(), payload(),
-                   qos_level(), timeout()) ->
-             ok | timeout).
-publish_sync(Conn, Topic, Payload, at_most_once, _) ->
-    publish(Conn, Topic, Payload);
-publish_sync(Conn, Topic, Payload, QoS, TO) ->
-    Ref = publish_ref(Conn, Topic, Payload, QoS),
-    Ack = ack_for(QoS),
-    receive {Ack, Ref} ->
-            ok
-    after TO ->
-            timeout
-    end.
-
-publish_ref(Conn, Topic, Payload, QoS) ->
-    Ref = make_ref(),
-    publish(Conn, Topic, Payload, [QoS, {ref, Ref}]),
-    Ref.
-
-ack_for(at_least_once) -> puback; 
-ack_for(exactly_once)  -> pubrec.
 
 %% Wait for a message sent to the calling process, which is assumed to
 %% have been registered as the consumer for a connection. Return
@@ -183,6 +182,22 @@ recv_message(Timeout) ->
     end.
 
 %% ---- helpers
+
+%% Helpers
+qos_option([at_most_once | _])  -> at_most_once;
+qos_option([at_least_once | _]) -> at_least_once;
+qos_option([exactly_once | _])  -> exactly_once;
+qos_option([{qos, QoS} | _])    -> QoS;
+qos_option([_Else | Rest])      -> qos_option(Rest);
+qos_option([])                  -> at_most_once.
+
+publish_ref(Conn, Topic, Payload, Options) ->
+    Ref = make_ref(),
+    publish(Conn, Topic, Payload, [{ref, Ref} | Options]),
+    Ref.
+
+ack_for(at_least_once) -> puback;
+ack_for(exactly_once)  -> pubrec.
 
 %% Not very UUIDy, but probably good enough for now.
 random_client_id() ->

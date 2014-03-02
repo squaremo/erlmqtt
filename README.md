@@ -44,18 +44,26 @@ ok
 ```
 
 There's also a `publish/4` which accepts a proplist of options, e.g.,
-`[retain, at_least_once]`.
+`[retain, at_least_once]`, and `publish_sync/4` and `publish_sync/5`,
+which publish a message using guaranteed delivery and return when the
+message has been delivered (or in the case of `publish_sync/5`, if it
+has timed out).
 
-Currently, using "quality of service" other than `at_most_once` does
-not get you a lot; the connection will enact the correct protocol, but
-if it crashes you will still lose the state.
+```erlang
+4> erlmqtt:publish_sync(C, "topic/a/b", <<"payload">>, at_least_once).
+ok
+```
+
+Currently, using "quality of service" (guaranteed delivery) other than
+`at_most_once` does not get you a lot; the connection will enact the
+correct protocol, but if it crashes you will still lose the state.
 
 *Receiving messages*
 
 ```erlang
-4> erlmqtt:recv_message(1000).
-{<<"topic/a/b">>,<<"payload">>}
 5> erlmqtt:recv_message(1000).
+{<<"topic/a/b">>,<<"payload">>}
+6> erlmqtt:recv_message(1000).
 timeout
 ```
 
