@@ -167,9 +167,7 @@ publish_sync(Conn, Topic, Payload, Options) ->
 %% the topic and payload of the message as {Topic, Payload}.
 -spec(recv_message() -> {binary(), binary()}).
 recv_message() ->
-    receive {frame, #publish{topic = T, payload = P}} ->
-            {T, P}
-    end.
+    recv_message(infinity).
 
 %% Wait for a message and return {Topic, Payload}, or time out after
 %% Timeout, in which case return 'timeout'.
