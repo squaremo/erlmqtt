@@ -8,7 +8,8 @@
          disconnect/1,
          publish/3, publish/4,
          publish_sync/4, publish_sync/5,
-         recv_message/0, recv_message/1
+         recv_message/0, recv_message/1,
+         poll_message/0
         ]).
 
 -include("include/types.hrl").
@@ -177,6 +178,13 @@ recv_message(Timeout) ->
             {T, P}
     after Timeout ->
             timeout
+    end.
+
+-spec(poll_message() -> {binary(), binary()} | 'none').
+poll_message() ->
+    case recv_message(0) of
+        timeout      -> none;
+        Msg = {_, _} -> Msg
     end.
 
 %% ---- helpers

@@ -50,7 +50,7 @@ message has been delivered (or in the case of `publish_sync/5`, if it
 has timed out).
 
 ```erlang
-4> erlmqtt:publish_sync(C, "topic/a/b", <<"payload">>, at_least_once).
+4> erlmqtt:publish_sync(C, "/dev/null", <<"payload">>, at_least_once).
 ok
 ```
 
@@ -65,10 +65,17 @@ correct protocol, but if it crashes you will still lose the state.
 {<<"topic/a/b">>,<<"payload">>}
 6> erlmqtt:recv_message(1000).
 timeout
+7> erlmqtt:publish(C, "topic/foo", <<"payload">>).
+8> erlmqtt:poll_message().
+{<<"topic/foo">>,<<"payload">>}
+9> erlmqtt:poll_message().
+none
 ```
 
 When a connection is opened, the calling process is volunteered as the
 message consumer. This means the connection will deliver messages to
 its mailbox. `recv_message/0` and `recv_message/1` wait for a message
 to arrive (in the latter case, for a limited time) and return it as a
-pair of topic and payload.
+pair of topic and payload. `poll_message/0` returns a pair of topic
+and payload if a message is available in the mailbox now, otherwise
+`'none'`.
