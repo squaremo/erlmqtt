@@ -69,46 +69,30 @@ open(HostSpec, ClientId, Options) ->
              {ok, [qos_level()]}).
 subscribe(Conn, Topics) ->
     Topics1 = [norm_topic(T) || T <- Topics],
-    {ok, Ref} = erlmqtt_connection:subscribe(Conn, Topics1),
-    receive {Ref, {suback, Granted}} ->
-            {ok, Granted}
-    end.
+    erlmqtt_connection:subscribe(Conn, Topics1).
 
 %% Similar to subscribe/2 but will return `{timeout, Ref}'` if the
 %% server does not reply within the given timeout, where the Ref
 %% corresponds to the awaited reply.
 -spec(subscribe(connection(), [subscription()], timeout()) ->
-             {ok, [qos_level()]} | {'timeout', reference()}).
+             {ok, [qos_level()]} | 'timeout').
 subscribe(Conn, Topics, Timeout) ->
     Topics1 = [norm_topic(T) || T <- Topics],
-    {ok, Ref} = erlmqtt_connection:subscribe(Conn, Topics1),
-    receive {Ref, {suback, Reply}} ->
-            {ok, Reply}
-    after Timeout ->
-            {timeout, Ref}
-    end.
+    erlmqtt_connection:subscribe(Conn, Topics1, Timeout).
 
 %% Unsubscribe from the given topics, which are each a string or
 %% binary. Returns 'ok' once the server has responded.
 -spec(unsubscribe(connection(), [topic()]) -> ok).
 unsubscribe(Conn, Topics) ->
-    {ok, Ref} = erlmqtt_connection:unsubscribe(Conn, Topics),
-    receive {Ref, unsuback} ->
-            ok
-    end.
+    erlmqtt_connection:unsubscribe(Conn, Topics).
 
 %% Unsubscribe from the given topics, and return ok or {timeout, Ref}
 %% if the operation does not get a reply from the server within
 %% Timeout.
 -spec(unsubscribe(connection(), [topic()], timeout()) ->
-             ok | {'timeout', reference()}).
+             ok | 'timeout').
 unsubscribe(Conn, Topics, Timeout) ->
-    {ok, Ref} = erlmqtt_connection:unsubscribe(Conn, Topics),
-    receive {Ref, unsuback} ->
-            ok
-    after Timeout ->
-            {timeout, Ref}
-    end.
+    erlmqtt_connection:unsubscribe(Conn, Topics, Timeout).
 
 %% Explicitly disconnect a session from a server.
 -spec(disconnect(connection()) -> ok).

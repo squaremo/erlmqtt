@@ -6,8 +6,8 @@
 -export([start_link/2, start_link/3, start_link/4,
          connect/1,
          publish/3, publish/4,
-         subscribe/2,
-         unsubscribe/2,
+         subscribe/2, subscribe/3,
+         unsubscribe/2, unsubscribe/3,
          disconnect/1]).
 
 %% gen_fsm callbacks
@@ -16,7 +16,8 @@
          terminate/3, code_change/4]).
 
 %% states
--export([unopened/3, opened/2]).
+-export([unopened/3,
+         opened/2, opened/3]).
 
 %% types useful elsewhere
 -export_type([
@@ -39,6 +40,9 @@
 -type(dedup() :: ?DEDUP(set())).
 
 -type(msg_ref() :: term()).
+
+%% The values given as From to the sync_send_event callbacks.
+-type(from() :: {pid(), reference()}).
 
 -record(state, {
           connect_args = undefined :: {
@@ -98,23 +102,31 @@ publish(Conn, Topic, Payload, Options) ->
     P1 = opts(P0, Options1),
     gen_fsm:send_event(Conn, {publish, P1, Ref}).
 
-%% NB subscribe also sends a reply `{suback, Qoses}` to the calling process
-%% when the server has responded.
--spec(subscribe(connection(), [{topic(), qos_level()}]) ->
-             {ok, reference()}).
-subscribe(Conn, Subs) ->
+-spec(subscribe(connection(), [{topic(), qos_level()}], timeout()) ->
+             {ok, [qos_level()]} | 'timeout').
+subscribe(Conn, Subs, Timeout) ->
     Subscribe = #subscribe{
       dup = false,
       subscriptions = [#subscription{ topic = T, qos = Q }
                        || {T, Q} <- Subs] },
-    rpc(Conn, Subscribe, self()).
+    rpc(Conn, Subscribe, Timeout).
 
-%% NB unsubscribe also sends `unsuback` to the calling process once
-%% the server has responded.
--spec(unsubscribe(connection(), [topic()]) -> {ok, reference()}).
-unsubscribe(Conn, Topics) ->
+%% Send subscribe and wait indefinitely
+-spec(subscribe(connection(), [{topic(), qos_level()}]) ->
+             {ok, [qos_level()]}).
+subscribe(Conn, Subs) ->
+    subscribe(Conn, Subs, infinity).
+
+-spec(unsubscribe(connection(), [topic()], timeout()) ->
+             ok | 'timeout').
+unsubscribe(Conn, Topics, Timeout) ->
     Unsub = #unsubscribe{ topics = Topics },
-    rpc(Conn, Unsub, self()).
+    rpc(Conn, Unsub, Timeout).
+
+%% Send ubsubscribe and wait indefinitely
+-spec(unsubscribe(connection(), [topic()]) -> ok).
+unsubscribe(Conn, Topics) ->
+    unsubscribe(Conn, Topics, infinity).
 
 -spec(disconnect(connection()) -> ok).
 disconnect(Conn) ->
@@ -224,6 +236,12 @@ bytes_sent(Socket) ->
 %% For the oft-repeated {next_state, opened, ...}
 -define(OPENED(S), {next_state, opened, S}).
 
+%% The sync version, for RPCs
+opened({rpc, Frame}, From, S0) ->
+    S1 = do_rpc(S0, Frame, From),
+    ?OPENED(S1).
+
+%% .. and the async version, for everything else.
 opened({timeout, Ref, MissedAndCount},
        S0 = #state{timer_ref = Ref, socket = Sock }) ->
     CountNow = bytes_sent(Sock),
@@ -254,10 +272,6 @@ opened({publish, P0, Ref}, S0 = #state{ id_counter = NextId,
                  write(S0, P0),
                  S0
          end,
-    ?OPENED(S1);
-
-opened({rpc, Frame, Ref, From}, S0) ->
-    S1 = do_rpc(S0, Frame, Ref, From),
     ?OPENED(S1);
 
 opened({frame, pingresp}, S0) -> ?OPENED(S0);
@@ -338,8 +352,8 @@ opened({frame, #pubcomp{ message_id = Id }}, S0) ->
 opened({frame, Frame}, S0) ->
     #state{ rpcs = RPC } = S0,
     {Id, Reply} = make_reply(Frame),
-    {{Ref, From}, RPC1} = take_rpc(Id, RPC),
-    From ! {Ref, Reply},
+    {From, RPC1} = take_rpc(Id, RPC),
+    gen_fsm:reply(From, Reply),
     ?OPENED(S0#state{ rpcs = RPC1 });
 
 %% Disconnect from the server and terminate.
@@ -387,33 +401,30 @@ write(#state{ socket = S }, Frame) ->
 %% RPCs
 
 %% Send an RPC frame (one that expects a reply) and return a receipt
-rpc(Conn, Frame, From) ->
-    Ref = make_ref(),
-    gen_fsm:send_event(Conn, {rpc, Frame, Ref, From}),
-    {ok, Ref}.
+rpc(Conn, Frame, Timeout) ->
+    gen_fsm:sync_send_event(Conn, {rpc, Frame}, Timeout).
 
 %% Record the fact of an RPC and send the frame with the correct id.
-do_rpc(S0, Req, Ref, From) ->
+do_rpc(S0, Req, From) ->
     #state{ id_counter = Id,
             rpcs = RPC } = S0,
-    RPC1 = record_rpc(Id, Ref, From, RPC),
+    RPC1 = record_rpc(Id, From, RPC),
     write(S0, with_id(Id, Req)),
     S0#state{ id_counter = Id + 1, rpcs = RPC1 }.
 
 -spec(empty_rpcs() -> rpcs()).
 empty_rpcs() -> ?RPCS(gb_trees:empty()).
 
--spec(record_rpc(message_id(), reference(), pid(), rpcs()) ->
+-spec(record_rpc(message_id(), from(), rpcs()) ->
              rpcs()).
-record_rpc(Id, Ref, From, ?RPCS(RPC)) ->
-    ?RPCS(gb_trees:insert(Id, {Ref, From}, RPC)).
+record_rpc(Id, From, ?RPCS(RPC)) ->
+    ?RPCS(gb_trees:insert(Id, From, RPC)).
 
--spec(take_rpc(message_id(), rpcs()) ->
-             {{reference(), pid()}, rpcs()}).
+-spec(take_rpc(message_id(), rpcs()) -> {from(), rpcs()}).
 take_rpc(Id, ?RPCS(RPC)) ->
-    Result = {_Ref, _From} = gb_trees:get(Id, RPC),
+    From = gb_trees:get(Id, RPC),
     RPC1 = gb_trees:delete(Id, RPC),
-    {Result, ?RPCS(RPC1)}.
+    {From, ?RPCS(RPC1)}.
 
 -spec(empty_replay() -> replay()).
 empty_replay() ->
@@ -476,9 +487,9 @@ dup_of(F = #pubrel{}) ->
     F#pubrel{ dup = true }.
 
 make_reply(#suback{ message_id = Id, qoses = QoSes }) ->
-    {Id, {suback, QoSes}};
+    {Id, {ok, QoSes}};
 make_reply(#unsuback{ message_id = Id }) ->
-    {Id, unsuback}.
+    {Id, ok}.
 
 %% Send an acknowledgment.
 do_ack(S, #publish{ qos = QoS }) ->
