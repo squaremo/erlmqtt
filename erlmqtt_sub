@@ -1,0 +1,12 @@
+#! /usr/bin/env escript
+
+main([Topic]) ->
+    {ok, C} = erlmqtt:open_clean("localhost", []),
+    io:format("Subscribing to ~s~n", [Topic]),
+    erlmqtt:subscribe(C, [Topic]),
+    recv().
+
+recv() ->
+    {_T, Msg} = erlmqtt:recv_message(),
+    io:format("~s~n", [Msg]),
+    recv().

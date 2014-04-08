@@ -1,0 +1,6 @@
+#! /usr/bin/env escript
+
+main([Topic, Msg]) ->
+    {ok, C} = erlmqtt:open_clean("localhost", []),
+    io:format("Publishing to ~s~n", [Topic]),
+    erlmqtt:publish_sync(C, Topic, Msg, at_least_once).
