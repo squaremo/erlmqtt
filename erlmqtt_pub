@@ -1,6 +1,34 @@
 #! /usr/bin/env escript
+%%! -pa ./ebin -pa deps/getopt/ebin
 
-main([Topic, Msg]) ->
-    {ok, C} = erlmqtt:open_clean("localhost", []),
+-define(OPTS,
+        [
+         {help, undefined, "help", boolean,
+          "Display usage information and exit"},
+         {host, $h, "host", {string, "localhost"},
+          "MQTT server hostname or IP address"},
+         {port, $p, "port", {integer, 1883},
+          "MQTT server port number"}
+        ]).
+
+-define(ARGS,
+        [{topic, "The topic to publish to"},
+         {message, "The message to publish"}]).
+
+main(Argv) ->
+    {ok, {Opts, Args}} = getopt:parse(?OPTS, Argv),
+    case proplists:get_value(help, Opts) of
+        true ->
+            ScriptPath = escript:script_name(),
+            Script = filename:basename(ScriptPath),
+            ArgString = [["<", atom_to_list(N), "> "] || {N, _} <- ?ARGS],
+            HelpString = [{["<", atom_to_list(N), ">"], H} || {N, H} <- ?ARGS],
+            getopt:usage(?OPTS, Script, ArgString, HelpString),
+            halt(0);
+        _ ->
+            ok
+    end,
+    [Topic, Msg |_] = Args,
+    {ok, C} = erlmqtt:open_clean(proplists:get_value(host, Opts), []),
     io:format("Publishing to ~s~n", [Topic]),
     erlmqtt:publish_sync(C, Topic, Msg, at_least_once).
