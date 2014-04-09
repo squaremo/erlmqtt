@@ -29,6 +29,8 @@ main(Argv) ->
             ok
     end,
     [Topic, Msg |_] = Args,
-    {ok, C} = erlmqtt:open_clean(proplists:get_value(host, Opts), []),
+    [Host, Port] = [proplists:get_value(K, Opts) ||
+                       K <- [host, port]],
+    {ok, C} = erlmqtt:open_clean({Host, Port}, []),
     io:format("Publishing to ~s~n", [Topic]),
     erlmqtt:publish_sync(C, Topic, Msg, at_least_once).
