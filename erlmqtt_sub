@@ -11,28 +11,24 @@
           "MQTT server port number"}
         ]).
 
--define(ARGS,
-        [{topic, "The topic to subscribe to"}]).
-
 main(Argv) ->
-    {ok, {Opts, Args}} = getopt:parse(?OPTS, Argv),
+    {ok, {Opts, Topics}} = getopt:parse(?OPTS, Argv),
     case proplists:get_value(help, Opts) of
         true ->
             ScriptPath = escript:script_name(),
             Script = filename:basename(ScriptPath),
-            ArgString = [["<", atom_to_list(N), "> "] || {N, _} <- ?ARGS],
-            HelpString = [{["<", atom_to_list(N), ">"], H} || {N, H} <- ?ARGS],
+            ArgString = "<topic> ...",
+            HelpString = [{["<topic>"], "A topic to subscribe to"}],
             getopt:usage(?OPTS, Script, ArgString, HelpString),
             halt(0);
         _ ->
             ok
     end,
-    [Topic |_] = Args,
     [Host, Port] = [proplists:get_value(K, Opts) ||
                        K <- [host, port]],
     {ok, C} = erlmqtt:open_clean({Host, Port}, []),
-    io:format("Subscribing to ~s~n", [Topic]),
-    erlmqtt:subscribe(C, [Topic]),
+    io:format("Subscribing to ~tp~n", [Topics]),
+    erlmqtt:subscribe(C, Topics),
     recv().
 
 recv() ->
