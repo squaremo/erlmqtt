@@ -79,3 +79,10 @@ to arrive (in the latter case, for a limited time) and return it as a
 pair of topic and payload. `poll_message/0` returns a pair of topic
 and payload if a message is available in the mailbox now, otherwise
 `'none'`.
+
+### Examples
+
+The scripts `erlmqtt_pub` and `erlmqtt_sub` give examples of publishing
+and subscribing respectively. Presently they must be run from the
+repository directory. Use the argument `--help` with either to see its
+usage.
