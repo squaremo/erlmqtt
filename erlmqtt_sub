@@ -8,7 +8,11 @@
          {host, $h, "host", {string, "localhost"},
           "MQTT server hostname or IP address"},
          {port, $p, "port", {integer, 1883},
-          "MQTT server port number"}
+          "MQTT server port number"},
+         {password, $P, "passwd", {string, "guest"},
+          "Password for authentication"},
+         {username, $u, "user", {string, "guest"},
+          "Username for authentication"}
         ]).
 
 main(Argv) ->
@@ -24,9 +28,11 @@ main(Argv) ->
         _ ->
             ok
     end,
-    [Host, Port] = [proplists:get_value(K, Opts) ||
-                       K <- [host, port]],
-    {ok, C} = erlmqtt:open_clean({Host, Port}, []),
+    [Host, Port, User, Passwd] =
+        [proplists:get_value(K, Opts) ||
+            K <- [host, port, username, password]],
+    {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
+                                                {password, Passwd}]),
     io:format("Subscribing to ~tp~n", [Topics]),
     erlmqtt:subscribe(C, Topics),
     recv().

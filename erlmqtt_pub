@@ -8,7 +8,11 @@
          {host, $h, "host", {string, "localhost"},
           "MQTT server hostname or IP address"},
          {port, $p, "port", {integer, 1883},
-          "MQTT server port number"}
+          "MQTT server port number"},
+         {password, $P, "passwd", {string, "guest"},
+          "Password for authentication"},
+         {username, $u, "user", {string, "guest"},
+          "Username for authentication"}
         ]).
 
 -define(ARGS,
@@ -29,8 +33,10 @@ main(Argv) ->
             ok
     end,
     [Topic, Msg |_] = Args,
-    [Host, Port] = [proplists:get_value(K, Opts) ||
-                       K <- [host, port]],
-    {ok, C} = erlmqtt:open_clean({Host, Port}, []),
+    [Host, Port, User, Passwd] =
+        [proplists:get_value(K, Opts) ||
+            K <- [host, port, username, password]],
+    {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
+                                                {password, Passwd}]),
     io:format("Publishing to ~s~n", [Topic]),
     erlmqtt:publish_sync(C, Topic, Msg, at_least_once).
