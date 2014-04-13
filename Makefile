@@ -13,4 +13,4 @@ clean:
 	rebar clean
 
 test: all
-	rebar eunit
+	rebar eunit apps=erlmqtt
