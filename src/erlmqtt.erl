@@ -9,7 +9,8 @@
          publish/3, publish/4,
          publish_sync/4, publish_sync/5,
          recv_message/0, recv_message/1,
-         poll_message/0
+         poll_message/0,
+         qos_symbol/1
         ]).
 
 -include("include/types.hrl").
@@ -171,9 +172,13 @@ poll_message() ->
         Msg = {_, _} -> Msg
     end.
 
+-spec(qos_symbol(0..2) -> qos_level()).
+qos_symbol(0) -> at_most_once;
+qos_symbol(1) -> at_least_once;
+qos_symbol(2) -> exactly_once.
+
 %% ---- helpers
 
-%% Helpers
 qos_option([at_most_once | _])  -> at_most_once;
 qos_option([at_least_once | _]) -> at_least_once;
 qos_option([exactly_once | _])  -> exactly_once;

@@ -12,7 +12,9 @@
          {password, $P, "passwd", {string, "guest"},
           "Password for authentication"},
          {username, $u, "user", {string, "guest"},
-          "Username for authentication"}
+          "Username for authentication"},
+         {qos_level, $q, "qos", {integer, 0},
+          "QoS level for the publication"}
         ]).
 
 -define(ARGS,
@@ -33,10 +35,11 @@ main(Argv) ->
             ok
     end,
     [Topic, Msg |_] = Args,
-    [Host, Port, User, Passwd] =
+    [Host, Port, User, Passwd, QosInt] =
         [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password]],
+            K <- [host, port, username, password, qos_level]],
+    QoS = erlmqtt:qos_symbol(QosInt),
     {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
                                                 {password, Passwd}]),
     io:format("Publishing to ~s~n", [Topic]),
-    erlmqtt:publish_sync(C, Topic, Msg, at_least_once).
+    erlmqtt:publish_sync(C, Topic, Msg, [QoS]).
