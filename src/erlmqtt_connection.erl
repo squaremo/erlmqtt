@@ -8,7 +8,8 @@
          publish/3, publish/4,
          subscribe/2, subscribe/3,
          unsubscribe/2, unsubscribe/3,
-         disconnect/1]).
+         disconnect/1,
+         disconnect_and_terminate/1]).
 
 %% gen_fsm callbacks
 -export([init/1, handle_event/3,
@@ -132,6 +133,11 @@ unsubscribe(Conn, Topics) ->
 disconnect(Conn) ->
     gen_fsm:send_event(Conn, disconnect).
 
+-spec(disconnect_and_terminate(connection()) -> ok).
+disconnect_and_terminate(Conn) -> 
+    disconnect(Conn),
+    gen_fsm:sync_send_event(Conn, terminate).
+
 %%% gen_fsm callbacks
 
 init([Address, ClientId, ConnectOpts, Receiver]) ->
@@ -163,7 +169,9 @@ unopened(connect, _From, S0 = #state{ socket = undefined }) ->
             open(S, Connect1);
         E = {error, _} ->
             {stop, E, E, S0}
-    end.
+    end;
+unopened(terminate, _From, S0 = #state{ socket = undefined }) ->
+    {stop, normal, ok, S0}.
 
 %% Helper for connect event
 open(S, Connect) ->
@@ -180,7 +188,7 @@ open(S, Connect) ->
                          ask_for_more(S2);
                      More ->
                          #state{ socket = Sock } = S2,
-                         self ! {tcp, Sock, More},
+                         self() ! {tcp, Sock, More},
                          S2
                  end,
             S4 = resend_or_reset(S3),
@@ -361,7 +369,7 @@ opened(disconnect, S0 = #state{ socket = Sock }) ->
     ok = write(S0, disconnect),
     ok = gen_tcp:close(Sock),
     S1 = stop_timer(S0),
-    {stop, normal, S1#state{ socket = undefined }}.
+    {next_state, unopened, S1#state{ socket = undefined }}.
 
 %% all states
 

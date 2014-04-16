@@ -3,9 +3,10 @@
 -export([
          open_clean/2,
          open/2, open/3,
+         connect/1, disconnect/1,
+         close/1,
          subscribe/2, subscribe/3,
          unsubscribe/2, unsubscribe/3,
-         disconnect/1,
          publish/3, publish/4,
          publish_sync/4, publish_sync/5,
          recv_message/0, recv_message/1,
@@ -59,6 +60,21 @@ open(HostSpec, ClientId, Options) ->
     ok = erlmqtt_connection:connect(Conn),
     {ok, Conn}.
 
+%% Explicitly disconnect a session from a server without terminating
+%% the connection.
+-spec(disconnect(connection()) -> ok).
+disconnect(Conn) ->    
+    erlmqtt_connection:disconnect(Conn).
+
+-spec(connect(connection()) -> ok).
+connect(Conn) -> 
+    erlmqtt_connection:connect(Conn).
+
+%% Close an MQTT session and terminate the connection.
+-spec(close(connection()) -> ok). 
+close(C) ->
+    erlmqtt_connection:disconnect_and_terminate(C).
+
 %% Subscribe a connection to the given topics. A topic may be a
 %% string, a binary, or a tuple of a string or binary with one of the
 %% atoms denoting a "quality of service": 'at_most_once',
@@ -94,11 +110,6 @@ unsubscribe(Conn, Topics) ->
              ok | 'timeout').
 unsubscribe(Conn, Topics, Timeout) ->
     erlmqtt_connection:unsubscribe(Conn, Topics, Timeout).
-
-%% Explicitly disconnect a session from a server.
--spec(disconnect(connection()) -> ok).
-disconnect(Conn) ->    
-    erlmqtt_connection:disconnect(Conn).
 
 %% publish a message with the default quality of service and options.
 -spec(publish(connection(), topic(), payload()) -> ok).

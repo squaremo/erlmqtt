@@ -44,4 +44,5 @@ main(Argv) ->
     {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
                                                 {password, Passwd}]),
     io:format("Publishing to ~s~n", [Topic]),
-    erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]).
+    erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]),
+    erlmqtt:close(C).
