@@ -1,5 +1,5 @@
 #! /usr/bin/env escript
-%%! -pa ./ebin -pa deps/getopt/ebin
+%%! -noinput -pa ./ebin -pa deps/getopt/ebin
 
 -define(OPTS,
         [
