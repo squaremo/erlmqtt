@@ -14,7 +14,9 @@
          {username, $u, "user", {string, "guest"},
           "Username for authentication"},
          {qos_level, $q, "qos", {integer, 0},
-          "QoS level for the publication"}
+          "QoS level for the publication"},
+         {retain, $r, "retain", {boolean, false},
+          "Set the retain flag"}
         ]).
 
 -define(ARGS,
@@ -35,11 +37,11 @@ main(Argv) ->
             ok
     end,
     [Topic, Msg |_] = Args,
-    [Host, Port, User, Passwd, QosInt] =
+    [Host, Port, User, Passwd, QosInt, Retain] =
         [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password, qos_level]],
+            K <- [host, port, username, password, qos_level, retain]],
     QoS = erlmqtt:qos_symbol(QosInt),
     {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
                                                 {password, Passwd}]),
     io:format("Publishing to ~s~n", [Topic]),
-    erlmqtt:publish_sync(C, Topic, Msg, [QoS]).
+    erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]).
