@@ -1,4 +1,5 @@
 #! /usr/bin/env escript
+%% -*- erlang -*-
 %%! -noinput -pa ./ebin -pa deps/getopt/ebin
 
 -define(OPTS,

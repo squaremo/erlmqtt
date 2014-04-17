@@ -1,4 +1,5 @@
 #! /usr/bin/env escript
+%% -*- erlang -*-
 %%! -noinput -pa ./ebin -pa deps/getopt/ebin
 
 -define(OPTS,
@@ -16,33 +17,63 @@
          {qos_level, $q, "qos", {integer, 0},
           "QoS level for the publication"},
          {retain, $r, "retain", {boolean, false},
-          "Set the retain flag"}
+          "Set the retain flag"},
+         {file, $f, "file", string,
+          "Read the message from the file path following"},
+         {topic, $t, "topic", string,
+          "The topic to which to publish"},
+         {message, $m, "message", string,
+          "A message to publish"},
+         {null, $n, "null-message", {boolean, false},
+          "Publish an empty message"}
         ]).
 
--define(ARGS,
-        [{topic, "The topic to publish to"},
-         {message, "The message to publish"}]).
-
 main(Argv) ->
-    {ok, {Opts, Args}} = getopt:parse(?OPTS, Argv),
+    {ok, {Opts, _Args}} = getopt:parse(?OPTS, Argv),
     case proplists:get_value(help, Opts) of
         true ->
-            ScriptPath = escript:script_name(),
-            Script = filename:basename(ScriptPath),
-            ArgString = [["<", atom_to_list(N), "> "] || {N, _} <- ?ARGS],
-            HelpString = [{["<", atom_to_list(N), ">"], H} || {N, H} <- ?ARGS],
-            getopt:usage(?OPTS, Script, ArgString, HelpString),
+            usage(),
             halt(0);
         _ ->
             ok
     end,
-    [Topic, Msg |_] = Args,
-    [Host, Port, User, Passwd, QosInt, Retain] =
+    [Host, Port, User, Passwd, QosInt, Retain, Topic] =
         [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password, qos_level, retain]],
+            K <- [host, port, username, password,
+                  qos_level, retain, topic]],
+    if Topic == undefined ->
+            usage_error("A topic must be supplied with -t");
+       true -> ok
+    end,
+    Sources = [proplists:get_value(K, Opts, false) ||
+                  K <- [file, message, null]],
+    Msg = case Sources of
+              [false, false, false] ->
+                  usage_error(
+                    "Exactly one of -f, -m, -n must be given");
+              [File, false, false] ->
+                  {ok, M} = file:read_file(File), M;
+              [false, M, false] ->
+                  M;
+              [false, false, true] ->
+                  <<>>;
+              _ ->
+                  usage_error(
+                    "Exactly one of -f, -m, -n must be given")
+          end,
     QoS = erlmqtt:qos_symbol(QosInt),
     {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
                                                 {password, Passwd}]),
-    io:format("Publishing to ~s~n", [Topic]),
+    io:format(standard_error, "Publishing to ~s~n", [Topic]),
     erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]),
     erlmqtt:close(C).
+
+usage() ->
+    ScriptPath = escript:script_name(),
+    Script = filename:basename(ScriptPath),
+    getopt:usage(?OPTS, Script).
+
+usage_error(Msg) ->
+    io:format(standard_error, "~s~n~n", [Msg]),
+    usage(),
+    halt(1).
