@@ -15,11 +15,15 @@
          {username, $u, "user", {string, "guest"},
           "Username for authentication"},
          {qos_level, $q, "qos", {integer, 0},
-          "QoS for subscriptions"}
+          "QoS for subscriptions"},
+         {topic, $t, "topic", string,
+          "A topic to which to subscribe"},
+         {keep_alive, $k, "keepalive", {integer, 60},
+          "Period for keepalive ping, in seconds"}
         ]).
 
 main(Argv) ->
-    {ok, {Opts, Topics}} = getopt:parse(?OPTS, Argv),
+    {ok, {Opts, _}} = getopt:parse(?OPTS, Argv),
     case proplists:get_value(help, Opts) of
         true ->
             ScriptPath = escript:script_name(),
@@ -31,12 +35,15 @@ main(Argv) ->
         _ ->
             ok
     end,
-    [Host, Port, User, Passwd, QosInt] =
+    [Host, Port, User, Passwd, KA] =
         [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password, qos_level]],
+            K <- [host, port, username, password, keep_alive]],
     {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
-                                                {password, Passwd}]),
-    QoS = erlmqtt:qos_symbol(QosInt),
+                                                {password, Passwd},
+                                                {keep_alive, KA}]),
+
+    QoS = erlmqtt:qos_symbol(proplists:get_value(qos_level, Opts)),
+    Topics = proplists:get_all_values(topic, Opts),
     io:format("Subscribing to ~tp~n", [Topics]),
     erlmqtt:subscribe(C, [{T, QoS} || T <- Topics]),
     recv().
