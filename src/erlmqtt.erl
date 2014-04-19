@@ -11,7 +11,8 @@
          publish_sync/4, publish_sync/5,
          recv_message/0, recv_message/1,
          poll_message/0,
-         qos_symbol/1
+         qos_symbol/1,
+         is_connect_option/1
         ]).
 
 -include("include/types.hrl").
@@ -183,12 +184,20 @@ poll_message() ->
         Msg = {_, _} -> Msg
     end.
 
+%% -- helpers for command-line
+
 -spec(qos_symbol(0..2) -> qos_level()).
 qos_symbol(0) -> at_most_once;
 qos_symbol(1) -> at_least_once;
 qos_symbol(2) -> exactly_once.
 
-%% ---- helpers
+-spec(is_connect_option({atom(), term()}) -> boolean()).
+is_connect_option({username, _})   -> true; 
+is_connect_option({password, _})   -> true;
+is_connect_option({keep_alive, _}) -> true;
+is_connect_option(_)               -> false.
+
+%% ---- internal helpers
 
 qos_option([at_most_once | _])  -> at_most_once;
 qos_option([at_least_once | _]) -> at_least_once;

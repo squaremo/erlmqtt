@@ -14,6 +14,8 @@
           "Password for authentication"},
          {username, $u, "user", {string, "guest"},
           "Username for authentication"},
+         {keep_alive, $k, "keepalive", {integer, 60},
+          "Period for keepalive ping, in seconds"},
          {topic, $t, "topic", string,
           "The topic to which to publish"},
          {qos_level, $q, "qos", {integer, 0},
@@ -37,10 +39,9 @@ main(Argv) ->
         _ ->
             ok
     end,
-    [Host, Port, User, Passwd, QosInt, Retain, Topic] =
+    [Host, Port, QosInt, Retain, Topic] =
         [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password,
-                  qos_level, retain, topic]],
+            K <- [host, port, qos_level, retain, topic]],
     if Topic == undefined ->
             usage_error("A topic must be supplied with -t");
        true -> ok
@@ -61,11 +62,12 @@ main(Argv) ->
                   usage_error(
                     "Exactly one of -f, -m, -n must be given")
           end,
+    ConnectOpts = [O || O <- Opts, erlmqtt:is_connect_option(O)],
+    {ok, C} = erlmqtt:open_clean({Host, Port}, ConnectOpts),
+
     QoS = erlmqtt:qos_symbol(QosInt),
-    {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
-                                                {password, Passwd}]),
-    io:format(standard_error, "Publishing to ~s~n", [Topic]),
     erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]),
+    io:format(standard_error, "Publishing to ~s~n", [Topic]),
     erlmqtt:close(C).
 
 usage() ->

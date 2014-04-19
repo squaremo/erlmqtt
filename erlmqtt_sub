@@ -19,7 +19,7 @@
          {topic, $t, "topic", string,
           "A topic to which to subscribe"},
          {keep_alive, $k, "keepalive", {integer, 60},
-          "Period for keepalive ping, in seconds"}
+          "Period for keep-alive ping, in seconds"}
         ]).
 
 main(Argv) ->
@@ -35,12 +35,10 @@ main(Argv) ->
         _ ->
             ok
     end,
-    [Host, Port, User, Passwd, KA] =
-        [proplists:get_value(K, Opts) ||
-            K <- [host, port, username, password, keep_alive]],
-    {ok, C} = erlmqtt:open_clean({Host, Port}, [{username, User},
-                                                {password, Passwd},
-                                                {keep_alive, KA}]),
+    [Host, Port] =
+        [proplists:get_value(K, Opts) || K <- [host, port]],
+    ConnectOpts = [O || O <- Opts, erlmqtt:is_connect_option(O)],
+    {ok, C} = erlmqtt:open_clean({Host, Port}, ConnectOpts),
 
     QoS = erlmqtt:qos_symbol(proplists:get_value(qos_level, Opts)),
     Topics = proplists:get_all_values(topic, Opts),
