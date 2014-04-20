@@ -17,6 +17,10 @@
           "Username for authentication"},
          {keep_alive, $k, "keepalive", {integer, 60},
           "Period for keep-alive ping, in seconds"},
+         {client_id, $i, "id", string,
+          "Client ID to use for session"},
+         {unclean, $c, "disable-clean-session", {boolean, false},
+          "Disable clean session"},
 
          {qos_level, $q, "qos", {integer, 0},
           "QoS for subscriptions"},
@@ -37,10 +41,16 @@ main(Argv) ->
         _ ->
             ok
     end,
-    [Host, Port] =
-        [proplists:get_value(K, Opts) || K <- [host, port]],
-    ConnectOpts = [O || O <- Opts, erlmqtt:is_connect_option(O)],
-    {ok, C} = erlmqtt:open_clean({Host, Port}, ConnectOpts),
+    [Host, Port, Unclean] =
+        [proplists:get_value(K, Opts) || K <- [host, port, unclean]],
+    ConnectOpts0 = [O || O <- Opts, erlmqtt:is_connect_option(O)],
+    ConnectOpts = [{clean_session, not Unclean} | ConnectOpts0],
+    {ok, C} = case Unclean of
+                  false ->
+                      erlmqtt:open_clean({Host, Port}, ConnectOpts);
+                  true ->
+                      erlmqtt:open({Host, Port}, ConnectOpts)
+              end,
 
     QoS = erlmqtt:qos_symbol(proplists:get_value(qos_level, Opts)),
     Topics = proplists:get_all_values(topic, Opts),

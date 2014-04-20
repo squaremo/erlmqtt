@@ -195,6 +195,7 @@ qos_symbol(2) -> exactly_once.
 is_connect_option({username, _})   -> true; 
 is_connect_option({password, _})   -> true;
 is_connect_option({keep_alive, _}) -> true;
+is_connect_option({client_id, _})  -> true;
 is_connect_option(_)               -> false.
 
 %% ---- internal helpers
