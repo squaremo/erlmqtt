@@ -6,6 +6,7 @@
         [
          {help, undefined, "help", boolean,
           "Display usage information and exit"},
+
          {host, $h, "host", {string, "localhost"},
           "MQTT server hostname or IP address"},
          {port, $p, "port", {integer, 1883},
@@ -14,12 +15,13 @@
           "Password for authentication"},
          {username, $u, "user", {string, "guest"},
           "Username for authentication"},
+         {keep_alive, $k, "keepalive", {integer, 60},
+          "Period for keep-alive ping, in seconds"},
+
          {qos_level, $q, "qos", {integer, 0},
           "QoS for subscriptions"},
          {topic, $t, "topic", string,
-          "A topic to which to subscribe"},
-         {keep_alive, $k, "keepalive", {integer, 60},
-          "Period for keep-alive ping, in seconds"}
+          "A topic to which to subscribe"}
         ]).
 
 main(Argv) ->
