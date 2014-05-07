@@ -1,6 +1,6 @@
 #! /usr/bin/env escript
 %% -*- erlang -*-
-%%! -noinput -pa ./ebin -pa deps/getopt/ebin
+%%! -noshell -pa ./ebin -pa deps/getopt/ebin
 
 -define(OPTS,
         [
@@ -29,6 +29,8 @@
           "Read the message from the file path following"},
          {message, $m, "message", string,
           "A message to publish"},
+         {lines, $l, "stdin-line", {boolean, false},
+          "Read from stdin and publish a message per line"},
          {null, $n, "null-message", {boolean, false},
           "Publish an empty message"}
         ]).
@@ -50,16 +52,18 @@ main(Argv) ->
        true -> ok
     end,
     Sources = [proplists:get_value(K, Opts, false) ||
-                  K <- [file, message, null]],
+                  K <- [file, message, lines, null]],
     Msg = case Sources of
-              [false, false, false] ->
+              [false, false, false, false] ->
                   usage_error(
                     "Exactly one of -f, -m, -n must be given");
-              [File, false, false] ->
+              [File, false, false, false] ->
                   {ok, M} = file:read_file(File), M;
-              [false, M, false] ->
+              [false, M, false, false] ->
                   M;
-              [false, false, true] ->
+              [false, false, true, false] ->
+                  lines;
+              [false, false, false, true] ->
                   <<>>;
               _ ->
                   usage_error(
@@ -69,8 +73,13 @@ main(Argv) ->
     {ok, C} = erlmqtt:open_clean({Host, Port}, ConnectOpts),
 
     QoS = erlmqtt:qos_symbol(QosInt),
-    erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}]),
     io:format(standard_error, "Publishing to ~s~n", [Topic]),
+    case Msg of
+        lines ->
+            publish_lines(C, Topic, [QoS, {retain, Retain}]);
+        _ ->
+            erlmqtt:publish_sync(C, Topic, Msg, [QoS, {retain, Retain}])
+    end,
     erlmqtt:close(C).
 
 usage() ->
@@ -82,3 +91,14 @@ usage_error(Msg) ->
     io:format(standard_error, "~s~n~n", [Msg]),
     usage(),
     halt(1).
+
+publish_lines(Conn, Topic, Opts) ->
+    case io:get_line("") of
+        eof ->
+            ok;
+        Msg0 ->
+            %% ditch the line ending (or eof)
+            Msg = lists:sublist(Msg0, length(Msg0) - 1),
+            erlmqtt:publish_sync(Conn, Topic, Msg, Opts),
+            publish_lines(Conn, Topic, Opts)
+    end.
