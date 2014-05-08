@@ -51,23 +51,21 @@ main(Argv) ->
             usage_error("A topic must be supplied with -t");
        true -> ok
     end,
-    Sources = [proplists:get_value(K, Opts, false) ||
-                  K <- [file, message, lines, null]],
+    Sources0 = [{K, proplists:get_value(K, Opts, false)} ||
+                   K <- [file, message, lines, null]],
+    Sources = lists:filter(fun ({_, S}) -> S =/= false end, Sources0),
     Msg = case Sources of
-              [false, false, false, false] ->
-                  usage_error(
-                    "Exactly one of -f, -m, -n must be given");
-              [File, false, false, false] ->
+              [{file, File}] ->
                   {ok, M} = file:read_file(File), M;
-              [false, M, false, false] ->
+              [{message, M}] ->
                   M;
-              [false, false, true, false] ->
+              [{lines, true}] ->
                   lines;
-              [false, false, false, true] ->
+              [{null, true}] ->
                   <<>>;
               _ ->
                   usage_error(
-                    "Exactly one of -f, -m, -n must be given")
+                    "Exactly one of -f, -m, -l or -n must be given")
           end,
     ConnectOpts = [O || O <- Opts, erlmqtt:is_connect_option(O)],
     {ok, C} = erlmqtt:open_clean({Host, Port}, ConnectOpts),
