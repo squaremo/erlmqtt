@@ -34,9 +34,7 @@ main(Argv) ->
         true ->
             ScriptPath = escript:script_name(),
             Script = filename:basename(ScriptPath),
-            ArgString = "<topic> ...",
-            HelpString = [{["<topic>"], "A topic to subscribe to"}],
-            getopt:usage(?OPTS, Script, ArgString, HelpString),
+            getopt:usage(?OPTS, Script),
             halt(0);
         _ ->
             ok
